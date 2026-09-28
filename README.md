@@ -23,6 +23,10 @@ Tracks daily stock dispatch and cash settlement for a milk distribution business
 
 Everyone else (staff and shops) is added from inside the app.
 
+### Sample data (optional)
+
+To try the app with realistic data first, run [`supabase/seed/sample-data.sql`](supabase/seed/sample-data.sql) in the SQL Editor. It adds 6 products, 5 routes, 3 shops, a staff login and 30 days of trips, all with ids starting `DEMO-`. The logins it creates are listed at the top of the file. Run [`supabase/seed/remove-sample-data.sql`](supabase/seed/remove-sample-data.sql) to remove all of it (and nothing else) before importing your real data.
+
 ## 2. Moving data from the Google Sheet (one time)
 
 If you used the earlier Google Sheets version, bring all its data across, including trip history and shop PINs:
