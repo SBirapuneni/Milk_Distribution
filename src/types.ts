@@ -65,10 +65,27 @@ export interface Shop {
   HasPin: boolean;
 }
 
+/** A staff account, as listed for admins. */
+export interface Staff {
+  StaffId: string;
+  Name: string;
+  Phone: string;
+  Role: 'admin' | 'staff';
+  Active: boolean;
+}
+
+/** The logged-in staff member. */
+export interface StaffUser {
+  id: string;
+  name: string;
+  role: 'admin' | 'staff';
+}
+
 export interface MasterData {
   products: Product[];
   routes: Route[];
   shops: Shop[];
+  staff: Staff[]; // admins only; empty for other staff
 }
 
 /** A shop's order for one delivery (date + session). */

@@ -1,10 +1,5 @@
 import type {
   Analytics,
-  AnalyticsByDate,
-  AnalyticsByDriver,
-  AnalyticsByProduct,
-  AnalyticsByRoute,
-  AnalyticsBySession,
   MasterData,
   Product,
   Route,
@@ -14,8 +9,9 @@ import type {
   TripItem,
   TripWithItems,
 } from './types';
-import type { DashboardData, Indent, Shop, ShopHome, ShopSlot } from './types';
+import type { DashboardData, Indent, Shop, ShopHome, ShopSlot, Staff, StaffUser } from './types';
 import { addDays, localDateStr } from './util';
+import { computeAnalytics } from './analytics-compute';
 
 const products: Product[] = [
   { ProductId: 'P1', Name: 'Whole Milk', Unit: 'litre', Price: 60, Active: true },
@@ -31,7 +27,16 @@ const routes: Route[] = [
   { RouteId: 'R5', Name: 'Route 5', Villages: 'Anandpur', DefaultVehicle: 'KA-01-AB-5678', DefaultDriver: 'Ganesh', Active: true },
 ];
 
-export const DEMO_ADMIN_PASSCODE = 'admin';
+// Demo logins (phone + PIN). In demo mode PINs are plain text; the real
+// backend stores only bcrypt hashes.
+export const DEMO_STAFF = [
+  { phone: '9000000009', pin: '999999', label: 'admin' },
+  { phone: '9000000008', pin: '888888', label: 'staff' },
+];
+const staff: (Staff & { pin: string })[] = [
+  { StaffId: 'U1', Name: 'Owner', Phone: '9000000009', Role: 'admin', Active: true, pin: '999999' },
+  { StaffId: 'U2', Name: 'Ravi', Phone: '9000000008', Role: 'staff', Active: true, pin: '888888' },
+];
 
 const trips: Trip[] = [];
 const tripItems: TripItem[] = [];
@@ -59,8 +64,13 @@ function newId(prefix: string): string {
   return prefix + Date.now() + Math.floor(Math.random() * 1000);
 }
 
-export async function getMasterData(): Promise<MasterData> {
-  return { products: [...products], routes: [...routes], shops: shops.map(publicShop) };
+export async function getMasterData(admin = true): Promise<MasterData> {
+  return {
+    products: [...products],
+    routes: [...routes],
+    shops: shops.map(publicShop),
+    staff: admin ? staff.map(({ pin: _pin, ...s }) => (void _pin, { ...s })) : [],
+  };
 }
 
 export async function saveProduct(payload: {
@@ -123,12 +133,15 @@ export async function getTrip(routeId: string, date: string, session: Session): 
   return { trip: { ...trip }, items: items.map((i) => ({ ...i })) };
 }
 
-export async function getRouteDay(payload: {
-  routeId: string;
-  date: string;
-  session?: Session;
-  fallbackSession: Session;
-}): Promise<RouteDay> {
+export async function getRouteDay(
+  payload: {
+    routeId: string;
+    date: string;
+    session?: Session;
+    fallbackSession: Session;
+  },
+  admin = true,
+): Promise<RouteDay> {
   const dayTrips = trips.filter((t) => t.RouteId === payload.routeId && t.Date === payload.date);
   const days = (await Promise.all(dayTrips.map((t) => getTrip(t.RouteId, t.Date, t.Session)))).filter(
     (d): d is TripWithItems => d !== null,
@@ -137,7 +150,7 @@ export async function getRouteDay(payload: {
     days.some((d) => d.trip.Session === s && d.trip.Status === 'Dispatched'),
   );
   return {
-    ...(await getMasterData()),
+    ...(await getMasterData(admin)),
     session: payload.session ?? awaiting ?? payload.fallbackSession,
     trips: days,
     indents: indents.filter((o) => o.routeId === payload.routeId && o.date === payload.date && o.items.length > 0),
@@ -271,8 +284,8 @@ export async function settleTrip(payload: {
   return (await getTrip(trip.RouteId, trip.Date, trip.Session))!;
 }
 
-export async function reopenTrip(payload: { tripId: string; adminToken: string }, user: string): Promise<TripWithItems> {
-  if (payload.adminToken !== DEMO_ADMIN_PASSCODE) throw new Error('Incorrect admin passcode');
+export async function reopenTrip(payload: { tripId: string }, user: string, admin: boolean): Promise<TripWithItems> {
+  if (!admin) throw new Error('Only an admin can do this.');
   const trip = trips.find((t) => t.TripId === payload.tripId);
   if (!trip) throw new Error('Trip not found');
   if (trip.Status !== 'Settled') throw new Error('Trip is not settled');
@@ -306,149 +319,17 @@ export async function getTodayStatus(date: string): Promise<Trip[]> {
 export async function getAnalytics(
   payload: { dateFrom?: string; dateTo?: string; previous?: { dateFrom: string; dateTo: string } } = {},
 ): Promise<Analytics> {
-  const result = computeAnalytics(payload);
-  if (payload.previous) result.previous = computeAnalytics(payload.previous);
+  const source = {
+    trips,
+    items: tripItems,
+    routeNames: Object.fromEntries(routes.map((r) => [r.RouteId, r.Name])),
+    productNames: Object.fromEntries(products.map((p) => [p.ProductId, p.Name])),
+  };
+  const result = computeAnalytics(source, payload);
+  if (payload.previous) result.previous = computeAnalytics(source, payload.previous);
   return result;
 }
 
-function computeAnalytics(payload: { dateFrom?: string; dateTo?: string }): Analytics {
-  const settled = trips.filter((t) => {
-    if (t.Status !== 'Settled') return false;
-    if (payload.dateFrom && t.Date < payload.dateFrom) return false;
-    if (payload.dateTo && t.Date > payload.dateTo) return false;
-    return true;
-  });
-
-  const routeMap = new Map(routes.map((r) => [r.RouteId, r.Name]));
-  const productMap = new Map(products.map((p) => [p.ProductId, p.Name]));
-  const tripIdSet = new Set(settled.map((t) => t.TripId));
-  const items = tripItems.filter((i) => tripIdSet.has(i.TripId));
-
-  let totalDispatched = 0;
-  let totalReturned = 0;
-  let totalCash = 0;
-  let totalDiscrepancy = 0;
-  let totalShortage = 0;
-  let totalExcess = 0;
-
-  const byDateMap = new Map<string, AnalyticsByDate>();
-  const byRouteMap = new Map<string, AnalyticsByRoute>();
-  const byDriverMap = new Map<string, AnalyticsByDriver>();
-  const bySessionMap = new Map<Session, AnalyticsBySession>([
-    ['Morning', { session: 'Morning', dispatched: 0, returned: 0, tripCount: 0, revenue: 0 }],
-    ['Evening', { session: 'Evening', dispatched: 0, returned: 0, tripCount: 0, revenue: 0 }],
-  ]);
-
-  settled.forEach((t) => {
-    const dispatched = Number(t.DispatchedTotal) || 0;
-    const returned = Number(t.ReturnedTotal) || 0;
-    const discrepancy = Number(t.Discrepancy) || 0;
-    const cash = Number(t.CashHandedOver) || 0;
-    const shortage = discrepancy < 0 ? -discrepancy : 0;
-    const excess = discrepancy > 0 ? discrepancy : 0;
-
-    totalDispatched += dispatched;
-    totalReturned += returned;
-    totalCash += cash;
-    totalDiscrepancy += discrepancy;
-    totalShortage += shortage;
-    totalExcess += excess;
-
-    if (!byDateMap.has(t.Date)) {
-      byDateMap.set(t.Date, { date: t.Date, dispatched: 0, returned: 0, cash: 0, discrepancy: 0, shortage: 0, tripCount: 0, revenue: 0 });
-    }
-    const byDate = byDateMap.get(t.Date)!;
-    byDate.dispatched += dispatched;
-    byDate.returned += returned;
-    byDate.discrepancy += discrepancy;
-    byDate.shortage += shortage;
-    byDate.cash += cash;
-    byDate.tripCount += 1;
-    byDate.revenue = byDate.dispatched - byDate.returned;
-
-    if (!byRouteMap.has(t.RouteId)) {
-      byRouteMap.set(t.RouteId, {
-        routeId: t.RouteId,
-        routeName: routeMap.get(t.RouteId) || t.RouteId,
-        dispatched: 0,
-        returned: 0,
-        discrepancy: 0,
-        shortage: 0,
-        excess: 0,
-        tripCount: 0,
-        revenue: 0,
-      });
-    }
-    const byRoute = byRouteMap.get(t.RouteId)!;
-    byRoute.dispatched += dispatched;
-    byRoute.returned += returned;
-    byRoute.discrepancy += discrepancy;
-    byRoute.shortage += shortage;
-    byRoute.excess += excess;
-    byRoute.tripCount += 1;
-    byRoute.revenue = byRoute.dispatched - byRoute.returned;
-
-    const driver = t.Driver.trim() || '(no driver)';
-    if (!byDriverMap.has(driver)) {
-      byDriverMap.set(driver, { driver, tripCount: 0, shortTrips: 0, shortage: 0, excess: 0, discrepancy: 0 });
-    }
-    const byDriver = byDriverMap.get(driver)!;
-    byDriver.tripCount += 1;
-    if (shortage > 0) byDriver.shortTrips += 1;
-    byDriver.shortage += shortage;
-    byDriver.excess += excess;
-    byDriver.discrepancy += discrepancy;
-
-    const bySession = bySessionMap.get(t.Session);
-    if (bySession) {
-      bySession.dispatched += dispatched;
-      bySession.returned += returned;
-      bySession.tripCount += 1;
-      bySession.revenue = bySession.dispatched - bySession.returned;
-    }
-  });
-
-  const byProductMap = new Map<string, AnalyticsByProduct>();
-  items.forEach((i) => {
-    if (!byProductMap.has(i.ProductId)) {
-      byProductMap.set(i.ProductId, {
-        productId: i.ProductId,
-        productName: productMap.get(i.ProductId) || i.ProductId,
-        qtyDispatched: 0,
-        qtyReturned: 0,
-        dispatchedValue: 0,
-        returnedValue: 0,
-        revenue: 0,
-        returnRate: 0,
-      });
-    }
-    const p = byProductMap.get(i.ProductId)!;
-    p.qtyDispatched += i.QtyDispatched;
-    p.qtyReturned += i.QtyReturned;
-    p.dispatchedValue += i.DispatchedValue;
-    p.returnedValue += i.ReturnedValue;
-    p.revenue = p.dispatchedValue - p.returnedValue;
-    p.returnRate = p.qtyDispatched > 0 ? p.qtyReturned / p.qtyDispatched : 0;
-  });
-
-  return {
-    summary: {
-      totalDispatched,
-      totalReturned,
-      totalRevenue: totalDispatched - totalReturned,
-      totalCash,
-      totalDiscrepancy,
-      totalShortage,
-      totalExcess,
-      tripCount: settled.length,
-    },
-    byDate: Array.from(byDateMap.values()).sort((a, b) => a.date.localeCompare(b.date)),
-    byRoute: Array.from(byRouteMap.values()).sort((a, b) => b.revenue - a.revenue),
-    byDriver: Array.from(byDriverMap.values()).sort((a, b) => b.shortage - a.shortage || b.excess - a.excess),
-    bySession: Array.from(bySessionMap.values()),
-    byProduct: Array.from(byProductMap.values()).sort((a, b) => b.revenue - a.revenue),
-  };
-}
 
 // ---- Shops & shop orders (mirrors Code.gs) ----
 
@@ -544,15 +425,17 @@ function shopHome(shop: Shop): ShopHome {
   };
 }
 
-export async function shopCall(
-  creds: { phone: string; pin: string },
-  action: string,
-  payload: Record<string, unknown>,
-): Promise<ShopHome> {
-  const shop = shops.find((s) => s.Phone === normalizePhone(creds.phone) && s.Active);
-  if (!shop || shop.pin !== creds.pin) throw new Error('Incorrect phone number or PIN.');
-  if (action === 'shopLogin') return shopHome(shop);
-  if (action !== 'shopSaveOrder') throw new Error('Unauthorized');
+export async function shopLogin(phone: string, pin: string): Promise<{ ok: boolean; error?: string; token?: string; home?: ShopHome }> {
+  const shop = shops.find((s) => s.Phone === normalizePhone(phone) && s.Active);
+  if (!shop || shop.pin !== pin) return { ok: false, error: 'Incorrect phone number or PIN.' };
+  return { ok: true, token: `shop:${shop.ShopId}`, home: shopHome(shop) };
+}
+
+export async function shopCall(token: string, fn: string, payload: Record<string, unknown>): Promise<ShopHome> {
+  const shop = shops.find((s) => `shop:${s.ShopId}` === token && s.Active);
+  if (!shop) throw new Error('Please log in again.');
+  if (fn === 'shop_home') return shopHome(shop);
+  if (fn !== 'shop_save_order') throw new Error('Unknown action');
 
   const { date, session } = payload as { date: string; session: Session };
   if (!openSlots().some((s) => s.date === date && s.session === session)) throw new Error('Ordering for this delivery has closed.');
@@ -563,6 +446,53 @@ export async function shopCall(
   if (existing) Object.assign(existing, { items, total, updatedAt });
   else indents.push({ indentId: newId('I'), date, session, shopId: shop.ShopId, routeId: shop.RouteId, items, total, updatedAt });
   return shopHome(shop);
+}
+
+// ---- Staff logins (demo) ----
+
+export async function staffLogin(
+  phone: string,
+  pin: string,
+): Promise<{ ok: boolean; error?: string; token?: string; staff?: StaffUser; master?: MasterData }> {
+  const s = staff.find((x) => x.Phone === normalizePhone(phone) && x.Active);
+  if (!s || s.pin !== pin) return { ok: false, error: 'Incorrect phone number or PIN.' };
+  return {
+    ok: true,
+    token: `staff:${s.StaffId}`,
+    staff: { id: s.StaffId, name: s.Name, role: s.Role },
+    master: await getMasterData(s.Role === 'admin'),
+  };
+}
+
+export async function saveStaff(
+  payload: { staffId?: string; name: string; phone: string; role: 'admin' | 'staff'; active: boolean },
+  myId: string,
+): Promise<{ staffId: string; pin: string | null } & MasterData> {
+  const phone = normalizePhone(payload.phone);
+  if (!payload.name.trim()) throw new Error('Name is required');
+  if (!phone) throw new Error('Enter a 10-digit phone number');
+  const clash = staff.find((s) => s.Phone === phone && s.StaffId !== payload.staffId);
+  if (clash) throw new Error(`${clash.Name} already uses this phone number`);
+  if (payload.staffId) {
+    if (payload.staffId === myId && (payload.role !== 'admin' || !payload.active)) {
+      throw new Error("You can't remove your own admin access. Ask another admin.");
+    }
+    const existing = staff.find((s) => s.StaffId === payload.staffId);
+    if (!existing) throw new Error('Staff member not found');
+    Object.assign(existing, { Name: payload.name.trim(), Phone: phone, Role: payload.role, Active: payload.active });
+    return { staffId: existing.StaffId, pin: null, ...(await getMasterData()) };
+  }
+  const pin = newPin();
+  const staffId = newId('U');
+  staff.push({ StaffId: staffId, Name: payload.name.trim(), Phone: phone, Role: payload.role, Active: payload.active, pin });
+  return { staffId, pin, ...(await getMasterData()) };
+}
+
+export async function resetStaffPin(staffId: string): Promise<{ staffId: string; pin: string }> {
+  const s = staff.find((x) => x.StaffId === staffId);
+  if (!s) throw new Error('Staff member not found');
+  s.pin = newPin();
+  return { staffId, pin: s.pin };
 }
 
 export async function getDashboard(date: string): Promise<DashboardData> {

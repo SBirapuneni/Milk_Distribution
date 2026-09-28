@@ -1,4 +1,4 @@
-import { clearShopPin, DEMO_MODE, DEMO_SHOPS, getShopCreds, shopLogin, shopSaveOrder } from '../api';
+import { DEMO_MODE, DEMO_SHOPS, hasShopSession, lastShopPhone, shopHome, shopLogin, shopLogout, shopSaveOrder } from '../api';
 import type { Session, ShopHome, ShopSlot } from '../types';
 import { addDays, escapeHtml, money } from '../util';
 
@@ -7,17 +7,16 @@ import { addDays, escapeHtml, money } from '../util';
 // never shows the staff navigation or any other shop's data.
 
 export async function renderShopPortal(container: HTMLElement) {
-  const { phone, pin } = getShopCreds();
-  if (!pin) {
-    renderLogin(container, phone);
+  if (!hasShopSession()) {
+    renderLogin(container, lastShopPhone());
     return;
   }
   container.innerHTML = '<main class="page"><p>Loading...</p></main>';
   try {
-    renderOrders(container, await shopLogin(phone, pin));
+    renderOrders(container, await shopHome());
   } catch (err) {
-    clearShopPin();
-    renderLogin(container, phone, (err as Error).message);
+    if (!hasShopSession()) renderLogin(container, lastShopPhone(), (err as Error).message);
+    else container.innerHTML = `<main class="page"><p class="error">${escapeHtml((err as Error).message)}</p><p><a href="#/order" onclick="location.reload()">Try again</a></p></main>`;
   }
 }
 
@@ -106,8 +105,8 @@ function renderOrders(container: HTMLElement, home: ShopHome, selected?: { date:
   `;
 
   container.querySelector('#shop-logout')!.addEventListener('click', () => {
-    clearShopPin();
-    renderLogin(container, getShopCreds().phone);
+    shopLogout();
+    renderLogin(container, lastShopPhone());
   });
 
   if (!slot) return;
@@ -231,9 +230,8 @@ function renderOrders(container: HTMLElement, home: ShopHome, selected?: { date:
       renderOrders(container, updated, { date: slot.date, session: slot.session }, message);
     } catch (err) {
       const message = (err as Error).message;
-      if (/PIN/.test(message)) {
-        clearShopPin();
-        renderLogin(container, getShopCreds().phone, message);
+      if (!hasShopSession()) {
+        renderLogin(container, lastShopPhone(), message);
         return;
       }
       statusEl.className = 'error';

@@ -1,87 +1,159 @@
-import type { Analytics, DashboardData, MasterData, RouteDay, Session, ShopHome, Trip, TripWithItems } from './types';
+import type {
+  Analytics,
+  DashboardData,
+  MasterData,
+  RouteDay,
+  Session,
+  ShopHome,
+  StaffUser,
+  Trip,
+  TripItem,
+  TripWithItems,
+} from './types';
+import { computeAnalytics } from './analytics-compute';
 import * as mock from './mock';
 
-const API_URL = import.meta.env.VITE_API_URL;
-const TOKEN_KEY = 'milk_app_token';
-const USER_KEY = 'milk_app_user';
+// The backend is a set of Postgres functions on Supabase, called over HTTP as
+// POST {SUPABASE_URL}/rest/v1/rpc/<function>. The key is the project's
+// public ("publishable"/anon) key: it can only call those functions, and
+// each function checks the caller's session token itself.
+const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || '').replace(/\/+$/, '');
+const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_KEY || '';
 
-// With no Apps Script URL configured, fall back to an in-memory demo backend
-// so the UI can be tried out before the Google Sheet is set up. Demo data
-// resets on page reload.
-export const DEMO_MODE = !API_URL;
-export const DEMO_PASSCODE = 'demo';
-export const DEMO_ADMIN_PASSCODE = mock.DEMO_ADMIN_PASSCODE;
+// Without Supabase settings, fall back to an in-memory demo backend so the
+// app can be tried out. Demo data resets on page reload.
+export const DEMO_MODE = !SUPABASE_URL || !SUPABASE_KEY;
+export const DEMO_STAFF = mock.DEMO_STAFF;
 export const DEMO_SHOPS = mock.DEMO_SHOPS;
 
-export function getToken(): string | null {
-  return sessionStorage.getItem(TOKEN_KEY);
+// ---- Transport -------------------------------------------------------------
+
+let onSessionExpired: () => void = () => {};
+
+/** Called when the server says the staff session is no longer valid. */
+export function setSessionExpiredHandler(fn: () => void) {
+  onSessionExpired = fn;
 }
 
-export function setToken(token: string) {
-  sessionStorage.setItem(TOKEN_KEY, token);
-}
-
-export function clearToken() {
-  sessionStorage.removeItem(TOKEN_KEY);
-}
-
-// Who is using this device. Sent with every request and recorded on the trip
-// (DispatchedBy / SettledBy / ReopenedBy), since the passcode is shared.
-// Kept in localStorage so staff don't retype it every login.
-export function getUserName(): string {
-  try {
-    return localStorage.getItem(USER_KEY) || '';
-  } catch {
-    return '';
+class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly relogin: boolean,
+  ) {
+    super(message);
   }
 }
 
-export function setUserName(name: string) {
+async function rpc<T>(fn: string, args: Record<string, unknown>): Promise<T> {
+  let res: Response;
   try {
-    localStorage.setItem(USER_KEY, name);
+    res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SUPABASE_KEY },
+      body: JSON.stringify(args),
+    });
   } catch {
-    // Storage blocked (private mode etc.) — the name just won't be remembered.
+    throw new ApiError('Could not reach the server. Check your internet connection.', false);
   }
-  currentUser = name;
+  const text = await res.text();
+  let json: unknown = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    // non-JSON error page
+  }
+  if (!res.ok) {
+    const body = (json ?? {}) as { message?: string; hint?: string };
+    throw new ApiError(body.message || `Request failed (${res.status})`, body.hint === 'relogin');
+  }
+  return json as T;
 }
 
-let currentUser = getUserName();
+// ---- Staff session -----------------------------------------------------------
+// Each staff member logs in with their own phone + PIN. The session token is
+// kept on the device (7 days, extended as the app is used) until Log out.
 
-async function post<T>(auth: Record<string, unknown>, action: string, payload: Record<string, unknown>): Promise<T> {
-  if (!API_URL) throw new Error('VITE_API_URL is not configured');
+const SESSION_KEY = 'milk_staff_session';
 
-  const res = await fetch(API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({ ...auth, action, payload }),
-  });
-  const json = await res.json();
-  if (!json.ok) throw new Error(json.error || 'Request failed');
-  return json.data as T;
+interface StaffSession {
+  token: string;
+  staff: StaffUser;
 }
 
-function rawCall<T>(token: string | null, action: string, payload: Record<string, unknown> = {}): Promise<T> {
-  return post<T>({ token, user: currentUser }, action, payload);
+function readSession(): StaffSession | null {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    return raw ? (JSON.parse(raw) as StaffSession) : null;
+  } catch {
+    return null;
+  }
 }
 
-function call<T>(action: string, payload: Record<string, unknown> = {}): Promise<T> {
-  return rawCall<T>(getToken(), action, payload);
+let session: StaffSession | null = readSession();
+
+export function currentStaff(): StaffUser | null {
+  return session?.staff ?? null;
 }
 
-// Apps Script spins down when idle, and the first request after that pays a
-// multi-second start-up. Poke it (unauthenticated doGet, response ignored) as
-// soon as the app opens, while the user is still reading the screen or
-// typing the passcode, so the first real request finds it awake.
-export function warmUp() {
-  if (!API_URL) return;
-  fetch(API_URL, { method: 'GET', mode: 'no-cors' }).catch(() => {});
+export function isAdmin(): boolean {
+  return session?.staff.role === 'admin';
+}
+
+function saveSession(s: StaffSession | null) {
+  session = s;
+  try {
+    if (s) localStorage.setItem(SESSION_KEY, JSON.stringify(s));
+    else localStorage.removeItem(SESSION_KEY);
+  } catch {
+    // storage blocked: the session lasts until the page is closed
+  }
+}
+
+export async function staffLogin(phone: string, pin: string): Promise<void> {
+  const result = DEMO_MODE
+    ? await mock.staffLogin(phone, pin)
+    : await rpc<{ ok: boolean; error?: string; token?: string; staff?: StaffUser; master?: MasterData }>('staff_login', {
+        p: { phone, pin },
+      });
+  if (!result.ok || !result.token || !result.staff) throw new Error(result.error || 'Login failed');
+  saveSession({ token: result.token, staff: result.staff });
+  if (result.master) writeMasterCache(result.master);
+}
+
+export async function logout() {
+  const token = session?.token;
+  saveSession(null);
+  clearMasterCache();
+  if (token && !DEMO_MODE) await rpc('logout', { p_token: token }).catch(() => {});
+}
+
+/** Staff API call with the current session; an expired session sends the user back to login. */
+async function call<T>(fn: string, payload: Record<string, unknown> = {}): Promise<T> {
+  if (!session) {
+    onSessionExpired();
+    throw new Error('Please log in again.');
+  }
+  try {
+    return await rpc<T>(fn, { p_token: session.token, p: payload });
+  } catch (err) {
+    if (err instanceof ApiError && err.relogin) {
+      saveSession(null);
+      clearMasterCache();
+      onSessionExpired();
+    }
+    throw err;
+  }
+}
+
+function demoUser(): string {
+  return session?.staff.name ?? 'Demo';
 }
 
 // ---- Master data cache ----------------------------------------------------
-// Products and routes change rarely but were fetched on every screen — each
-// fetch a full Apps Script round trip (~1 s). Keep them for the session and
-// refresh from every response that carries them (login, Route screen, saves),
-// with a time limit so edits made on another phone show up.
+// Products, routes, shops (and, for admins, staff) change rarely but are
+// needed on most screens. Keep them for the session and refresh from every
+// response that carries them (login, Route screen, saves), with a time limit
+// so edits made on another phone show up.
 
 const MASTER_KEY = 'milk_app_master';
 const MASTER_TTL_MS = 5 * 60 * 1000;
@@ -91,8 +163,7 @@ function readMasterCache(): MasterData | null {
     const raw = sessionStorage.getItem(MASTER_KEY);
     if (!raw) return null;
     const { at, data } = JSON.parse(raw) as { at: number; data: MasterData };
-    // Entries cached by an older version lack shops: treat as expired.
-    return Date.now() - at < MASTER_TTL_MS && Array.isArray(data.shops) ? data : null;
+    return Date.now() - at < MASTER_TTL_MS && Array.isArray(data.shops) && Array.isArray(data.staff) ? data : null;
   } catch {
     return null;
   }
@@ -100,13 +171,14 @@ function readMasterCache(): MasterData | null {
 
 function writeMasterCache(data: MasterData) {
   try {
-    sessionStorage.setItem(MASTER_KEY, JSON.stringify({ at: Date.now(), data: { products: data.products, routes: data.routes, shops: data.shops } }));
+    const { products, routes, shops, staff } = data;
+    sessionStorage.setItem(MASTER_KEY, JSON.stringify({ at: Date.now(), data: { products, routes, shops, staff } }));
   } catch {
     // Storage full/blocked: we just refetch next time.
   }
 }
 
-export function clearMasterCache() {
+function clearMasterCache() {
   try {
     sessionStorage.removeItem(MASTER_KEY);
   } catch {
@@ -114,30 +186,19 @@ export function clearMasterCache() {
   }
 }
 
-export async function verifyToken(token: string): Promise<MasterData> {
-  if (DEMO_MODE) {
-    if (token !== DEMO_PASSCODE) throw new Error('Invalid passcode');
-    return mock.getMasterData();
-  }
-  const data = await rawCall<MasterData>(token, 'getMasterData');
+async function withMaster<T extends MasterData>(p: Promise<T>): Promise<T> {
+  const data = await p;
   writeMasterCache(data);
   return data;
 }
 
 export async function getMasterData(): Promise<MasterData> {
-  if (DEMO_MODE) return mock.getMasterData();
   const cached = readMasterCache();
   if (cached) return cached;
-  const data = await call<MasterData>('getMasterData');
-  writeMasterCache(data);
-  return data;
+  return withMaster(DEMO_MODE ? mock.getMasterData(isAdmin()) : call<MasterData>('get_master_data'));
 }
 
-async function withMaster<T extends MasterData>(p: Promise<T>): Promise<T> {
-  const data = await p;
-  if (!DEMO_MODE) writeMasterCache(data);
-  return data;
-}
+// ---- Products & routes (admin) -------------------------------------------------
 
 export function saveProduct(payload: {
   productId?: string;
@@ -146,7 +207,7 @@ export function saveProduct(payload: {
   price: number;
   active: boolean;
 }): Promise<{ productId: string } & MasterData> {
-  return withMaster(DEMO_MODE ? mock.saveProduct(payload) : call('saveProduct', payload));
+  return withMaster(DEMO_MODE ? mock.saveProduct(payload) : call('save_product', payload));
 }
 
 export function saveRoute(payload: {
@@ -157,8 +218,26 @@ export function saveRoute(payload: {
   defaultDriver: string;
   active: boolean;
 }): Promise<{ routeId: string } & MasterData> {
-  return withMaster(DEMO_MODE ? mock.saveRoute(payload) : call('saveRoute', payload));
+  return withMaster(DEMO_MODE ? mock.saveRoute(payload) : call('save_route', payload));
 }
+
+// ---- Staff (admin) ------------------------------------------------------------
+
+export function saveStaff(payload: {
+  staffId?: string;
+  name: string;
+  phone: string;
+  role: 'admin' | 'staff';
+  active: boolean;
+}): Promise<{ staffId: string; pin: string | null } & MasterData> {
+  return withMaster(DEMO_MODE ? mock.saveStaff(payload, session?.staff.id ?? '') : call('save_staff', payload));
+}
+
+export function resetStaffPin(staffId: string): Promise<{ staffId: string; pin: string }> {
+  return DEMO_MODE ? mock.resetStaffPin(staffId) : call('reset_staff_pin', { staffId });
+}
+
+// ---- Trips ----------------------------------------------------------------------
 
 export function getRouteDay(payload: {
   routeId: string;
@@ -166,11 +245,11 @@ export function getRouteDay(payload: {
   session?: Session;
   fallbackSession: Session;
 }): Promise<RouteDay> {
-  return withMaster(DEMO_MODE ? mock.getRouteDay(payload) : call('getRouteDay', payload));
+  return withMaster(DEMO_MODE ? mock.getRouteDay(payload, isAdmin()) : call('get_route_day', payload));
 }
 
 export function getLastTrip(routeId: string, session: Session, beforeDate: string): Promise<TripWithItems | null> {
-  return DEMO_MODE ? mock.getLastTrip(routeId, session, beforeDate) : call('getLastTrip', { routeId, session, beforeDate });
+  return DEMO_MODE ? mock.getLastTrip(routeId, session, beforeDate) : call('get_last_trip', { routeId, session, beforeDate });
 }
 
 export function dispatchTrip(payload: {
@@ -181,7 +260,7 @@ export function dispatchTrip(payload: {
   vehicle: string;
   items: { productId: string; qty: number }[];
 }): Promise<TripWithItems> {
-  return DEMO_MODE ? mock.dispatchTrip(payload, currentUser) : call('dispatchTrip', payload);
+  return DEMO_MODE ? mock.dispatchTrip(payload, demoUser()) : call('dispatch_trip', payload);
 }
 
 export function saveTripProgress(payload: {
@@ -189,7 +268,7 @@ export function saveTripProgress(payload: {
   items: { productId: string; qtyReturned: number }[];
   cashHandedOver: number;
 }): Promise<TripWithItems> {
-  return DEMO_MODE ? mock.saveTripProgress(payload) : call('saveTripProgress', payload);
+  return DEMO_MODE ? mock.saveTripProgress(payload) : call('save_trip_progress', payload);
 }
 
 export function settleTrip(payload: {
@@ -197,24 +276,46 @@ export function settleTrip(payload: {
   items: { productId: string; qtyReturned: number }[];
   cashHandedOver: number;
 }): Promise<TripWithItems> {
-  return DEMO_MODE ? mock.settleTrip(payload, currentUser) : call('settleTrip', payload);
+  return DEMO_MODE ? mock.settleTrip(payload, demoUser()) : call('settle_trip', payload);
 }
 
-export function reopenTrip(payload: { tripId: string; adminToken: string }): Promise<TripWithItems> {
-  return DEMO_MODE ? mock.reopenTrip(payload, currentUser) : call('reopenTrip', payload);
+/** Admins only. */
+export function reopenTrip(tripId: string): Promise<TripWithItems> {
+  return DEMO_MODE ? mock.reopenTrip({ tripId }, demoUser(), isAdmin()) : call('reopen_trip', { tripId });
 }
 
 export function listTrips(
   payload: { routeId?: string; dateFrom?: string; dateTo?: string } = {},
 ): Promise<Trip[]> {
-  return DEMO_MODE ? mock.listTrips(payload) : call('listTrips', payload);
+  return DEMO_MODE ? mock.listTrips(payload) : call('list_trips', payload);
 }
 
 export function getDashboard(date: string): Promise<DashboardData> {
-  return DEMO_MODE ? mock.getDashboard(date) : call('getDashboard', { date });
+  return DEMO_MODE ? mock.getDashboard(date) : call('get_dashboard', { date });
 }
 
-// ---- Shops (staff) ----------------------------------------------------------
+// The server returns raw settled trips for the whole span (selected range
+// plus the comparison range); the numbers are computed here, with the same
+// code demo mode uses.
+export async function getAnalytics(payload: {
+  dateFrom: string;
+  dateTo: string;
+  previous?: { dateFrom: string; dateTo: string };
+}): Promise<Analytics> {
+  if (DEMO_MODE) return mock.getAnalytics(payload);
+  const from = payload.previous && payload.previous.dateFrom < payload.dateFrom ? payload.previous.dateFrom : payload.dateFrom;
+  const raw = await call<{
+    trips: Trip[];
+    items: TripItem[];
+    routeNames: Record<string, string>;
+    productNames: Record<string, string>;
+  }>('get_analytics_data', { dateFrom: from, dateTo: payload.dateTo });
+  const result = computeAnalytics(raw, payload);
+  if (payload.previous) result.previous = computeAnalytics(raw, payload.previous);
+  return result;
+}
+
+// ---- Shops (admin) ----------------------------------------------------------
 
 export function saveShop(payload: {
   shopId?: string;
@@ -224,61 +325,84 @@ export function saveShop(payload: {
   routeId: string;
   active: boolean;
 }): Promise<{ shopId: string; pin: string | null } & MasterData> {
-  return withMaster(DEMO_MODE ? mock.saveShop(payload) : call('saveShop', payload));
+  return withMaster(DEMO_MODE ? mock.saveShop(payload) : call('save_shop', payload));
 }
 
 export function resetShopPin(shopId: string): Promise<{ shopId: string; pin: string }> {
-  return DEMO_MODE ? mock.resetShopPin(shopId) : call('resetShopPin', { shopId });
+  return DEMO_MODE ? mock.resetShopPin(shopId) : call('reset_shop_pin', { shopId });
 }
 
 // ---- Shop owner portal --------------------------------------------------------
-// Shop owners authenticate with phone + PIN on every request (there's no
-// server-side session). The phone is remembered on the device; the PIN only
-// for the browser session, like the staff passcode.
+// Shop owners log in with phone + PIN; the session (30 days, extended as it's
+// used) is kept on the device, separately from any staff session.
 
-const SHOP_PHONE_KEY = 'milk_shop_phone';
-const SHOP_PIN_KEY = 'milk_shop_pin';
+const SHOP_SESSION_KEY = 'milk_shop_session';
 
-export function getShopCreds(): { phone: string; pin: string | null } {
-  let phone = '';
-  let pin: string | null = null;
-  try {
-    phone = localStorage.getItem(SHOP_PHONE_KEY) || '';
-    pin = sessionStorage.getItem(SHOP_PIN_KEY);
-  } catch {
-    // storage blocked: the owner just logs in again
-  }
-  return { phone, pin };
+interface ShopSession {
+  token: string;
+  phone: string;
 }
 
-function setShopCreds(phone: string, pin: string) {
+function readShopSession(): ShopSession | null {
   try {
-    localStorage.setItem(SHOP_PHONE_KEY, phone);
-    sessionStorage.setItem(SHOP_PIN_KEY, pin);
+    const raw = localStorage.getItem(SHOP_SESSION_KEY);
+    return raw ? (JSON.parse(raw) as ShopSession) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function lastShopPhone(): string {
+  try {
+    return readShopSession()?.phone || localStorage.getItem('milk_shop_phone') || '';
+  } catch {
+    return '';
+  }
+}
+
+export function hasShopSession(): boolean {
+  return !!readShopSession()?.token;
+}
+
+export function shopLogout() {
+  const s = readShopSession();
+  try {
+    localStorage.removeItem(SHOP_SESSION_KEY);
+    if (s) localStorage.setItem('milk_shop_phone', s.phone);
   } catch {
     // ignore
   }
+  if (s && !DEMO_MODE) rpc('logout', { p_token: s.token }).catch(() => {});
 }
 
-export function clearShopPin() {
-  try {
-    sessionStorage.removeItem(SHOP_PIN_KEY);
-  } catch {
-    // ignore
-  }
-}
-
-function shopCall<T>(creds: { phone: string; pin: string }, action: string, payload: Record<string, unknown> = {}): Promise<T> {
-  return DEMO_MODE
-    ? (mock.shopCall(creds, action, payload) as Promise<T>)
-    : post<T>({ shop: creds }, action, payload);
-}
-
-/** Logs in (and remembers the credentials on success) and returns the order screen data. */
 export async function shopLogin(phone: string, pin: string): Promise<ShopHome> {
-  const home = await shopCall<ShopHome>({ phone, pin }, 'shopLogin');
-  setShopCreds(phone, pin);
-  return home;
+  const result = DEMO_MODE
+    ? await mock.shopLogin(phone, pin)
+    : await rpc<{ ok: boolean; error?: string; token?: string; home?: ShopHome }>('shop_login', { p: { phone, pin } });
+  if (!result.ok || !result.token || !result.home) throw new Error(result.error || 'Login failed');
+  try {
+    localStorage.setItem(SHOP_SESSION_KEY, JSON.stringify({ token: result.token, phone }));
+  } catch {
+    // ignore
+  }
+  return result.home;
+}
+
+async function shopCall<T>(fn: string, payload: Record<string, unknown> = {}): Promise<T> {
+  const s = readShopSession();
+  if (!s) throw new ApiError('Please log in again.', true);
+  try {
+    return DEMO_MODE
+      ? ((await mock.shopCall(s.token, fn, payload)) as T)
+      : await rpc<T>(fn, { p_token: s.token, p: payload });
+  } catch (err) {
+    if ((err instanceof ApiError && err.relogin) || /log in again/i.test((err as Error).message)) shopLogout();
+    throw err;
+  }
+}
+
+export function shopHome(): Promise<ShopHome> {
+  return shopCall<ShopHome>('shop_home');
 }
 
 export function shopSaveOrder(payload: {
@@ -286,17 +410,5 @@ export function shopSaveOrder(payload: {
   session: Session;
   items: { productId: string; qty: number }[];
 }): Promise<ShopHome> {
-  const { phone, pin } = getShopCreds();
-  if (!pin) return Promise.reject(new Error('Please log in again.'));
-  return shopCall<ShopHome>({ phone, pin }, 'shopSaveOrder', payload);
-}
-
-export function getTodayStatus(date: string): Promise<Trip[]> {
-  return DEMO_MODE ? mock.getTodayStatus(date) : call('getTodayStatus', { date });
-}
-
-export function getAnalytics(
-  payload: { dateFrom?: string; dateTo?: string; previous?: { dateFrom: string; dateTo: string } } = {},
-): Promise<Analytics> {
-  return DEMO_MODE ? mock.getAnalytics(payload) : call('getAnalytics', payload);
+  return shopCall<ShopHome>('shop_save_order', payload);
 }

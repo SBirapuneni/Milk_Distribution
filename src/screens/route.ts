@@ -1,5 +1,5 @@
 import { navHtml, wireNav } from '../components/nav';
-import { dispatchTrip, getLastTrip, getRouteDay, reopenTrip, saveTripProgress, settleTrip } from '../api';
+import { dispatchTrip, getLastTrip, getRouteDay, isAdmin, reopenTrip, saveTripProgress, settleTrip } from '../api';
 import type { Indent, Product, Route, RouteDay, Session, Shop, Trip, TripWithItems } from '../types';
 import { escapeHtml, localDateStr, money, shortDate } from '../util';
 
@@ -507,7 +507,7 @@ function confirmSettle({ amountDue, cash }: { amountDue: number; cash: number })
     `Cash handed over: ${money(cash)}`,
     `Discrepancy: ${discLabel}`,
     '',
-    'Once settled, only the owner can reopen this trip.',
+    'Once settled, only an admin can reopen this trip.',
   ];
   if (cash === 0 && amountDue > 0) {
     lines.unshift('No cash has been entered!', '');
@@ -549,33 +549,31 @@ function renderSettled(tripData: TripWithItems, productMap: Map<string, Product>
       }</p>
       ${renderAuditTrail(trip)}
     </div>
-    <details class="reopen">
-      <summary>Made a mistake? Reopen this trip</summary>
-      <form id="reopen-form" class="field-row">
-        <label>Admin passcode <input type="password" id="admin-passcode" required autocomplete="off" /></label>
-        <button type="submit">Reopen</button>
-      </form>
-      <p id="reopen-error" class="error"></p>
-    </details>
+    ${
+      isAdmin()
+        ? `<div class="reopen">
+            <button type="button" id="reopen-btn" class="secondary">Made a mistake? Reopen this trip</button>
+            <p id="reopen-error" class="error"></p>
+          </div>`
+        : '<p class="muted reopen">Made a mistake? Ask an admin to reopen this trip.</p>'
+    }
   `;
 }
 
+// Admins only (the server checks the role too).
 function wireReopen(container: HTMLElement, tripData: TripWithItems, onDone: (tripData: TripWithItems) => void) {
-  const form = container.querySelector<HTMLFormElement>('#reopen-form');
-  if (!form) return;
-  const input = form.querySelector<HTMLInputElement>('#admin-passcode')!;
+  const btn = container.querySelector<HTMLButtonElement>('#reopen-btn');
+  if (!btn) return;
   const errorEl = container.querySelector<HTMLParagraphElement>('#reopen-error')!;
-  const submitBtn = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
-
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
+  btn.addEventListener('click', async () => {
+    if (!window.confirm('Reopen this trip? It goes back to "awaiting return" with its figures kept, so it can be corrected and settled again.')) return;
     errorEl.textContent = '';
-    submitBtn.disabled = true;
+    btn.disabled = true;
     try {
-      onDone(await reopenTrip({ tripId: tripData.trip.TripId, adminToken: input.value }));
+      onDone(await reopenTrip(tripData.trip.TripId));
     } catch (err) {
       errorEl.textContent = (err as Error).message;
-      submitBtn.disabled = false;
+      btn.disabled = false;
     }
   });
 }

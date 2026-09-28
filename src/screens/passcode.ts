@@ -1,48 +1,44 @@
-import { DEMO_ADMIN_PASSCODE, DEMO_MODE, DEMO_PASSCODE, getUserName, setToken, setUserName, verifyToken } from '../api';
-import { escapeHtml } from '../util';
+import { DEMO_MODE, DEMO_STAFF, staffLogin } from '../api';
 
-export function renderPasscode(container: HTMLElement, onSuccess: () => void) {
+// Staff login: each person has their own phone + PIN, created by an admin on
+// the Staff page.
+export function renderPasscode(container: HTMLElement, onSuccess: () => void, message = '') {
   container.innerHTML = `
     <div class="passcode-screen">
       <h1>Milk Distribution</h1>
-      <form id="passcode-form">
-        <input type="text" id="name-input" placeholder="Your name" autocomplete="name" maxlength="50" value="${escapeHtml(getUserName())}" required />
-        <input type="password" id="passcode-input" placeholder="Enter passcode" required />
-        <button type="submit">Enter</button>
+      <p class="muted">Staff login</p>
+      <form id="login-form" class="stacked-form">
+        <input type="tel" id="phone-input" placeholder="Phone number" inputmode="numeric" autocomplete="tel" required />
+        <input type="password" id="pin-input" placeholder="6-digit PIN" inputmode="numeric" autocomplete="current-password" maxlength="6" pattern="\\d{6}" required />
+        <button type="submit">Log in</button>
       </form>
-      <p id="passcode-error" class="error"></p>
+      <p id="login-error" class="error"></p>
       <a href="#/order" class="small-link">Shop owner? Place your order here &rarr;</a>
-      ${DEMO_MODE ? `<p class="hint">Demo mode — no Google Sheet connected. Passcode is "${DEMO_PASSCODE}" (admin passcode for reopening trips: "${DEMO_ADMIN_PASSCODE}"). Data resets on reload.</p>` : ''}
+      ${
+        DEMO_MODE
+          ? `<p class="hint">Demo mode — no database connected; data resets on reload. Admin: ${DEMO_STAFF[0].phone} / PIN ${DEMO_STAFF[0].pin}. Staff: ${DEMO_STAFF[1].phone} / PIN ${DEMO_STAFF[1].pin}.</p>`
+          : ''
+      }
     </div>
   `;
 
-  const form = container.querySelector<HTMLFormElement>('#passcode-form')!;
-  const nameInput = container.querySelector<HTMLInputElement>('#name-input')!;
-  const input = container.querySelector<HTMLInputElement>('#passcode-input')!;
-  const errorEl = container.querySelector<HTMLParagraphElement>('#passcode-error')!;
+  const form = container.querySelector<HTMLFormElement>('#login-form')!;
+  const phoneInput = container.querySelector<HTMLInputElement>('#phone-input')!;
+  const pinInput = container.querySelector<HTMLInputElement>('#pin-input')!;
+  const errorEl = container.querySelector<HTMLParagraphElement>('#login-error')!;
   const submitBtn = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
-
-  (nameInput.value ? input : nameInput).focus();
+  errorEl.textContent = message;
+  phoneInput.focus();
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     errorEl.textContent = '';
-    const name = nameInput.value.trim();
-    if (!name) {
-      errorEl.textContent = 'Enter your name.';
-      return;
-    }
     submitBtn.disabled = true;
-    const value = input.value.trim();
     try {
-      await verifyToken(value);
-      setUserName(name);
-      setToken(value);
+      await staffLogin(phoneInput.value.trim(), pinInput.value.trim());
       onSuccess();
     } catch (err) {
-      const message = (err as Error).message;
-      errorEl.textContent = message.startsWith('Too many') ? message : 'Incorrect passcode or server unreachable.';
-    } finally {
+      errorEl.textContent = (err as Error).message;
       submitBtn.disabled = false;
     }
   });

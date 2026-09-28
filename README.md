@@ -1,78 +1,105 @@
 # Milk Distribution Tracker
 
-Tracks daily stock dispatch and cash settlement for a milk distribution shop's routes. Data lives in a Google Sheet (no database); the app is a static site hosted on GitHub Pages that talks to a Google Apps Script Web App acting as the API.
+Tracks daily stock dispatch and cash settlement for a milk distribution business's routes, and lets shops place their own orders. The app is a static site (hosted on Cloudflare Pages); the data lives in a Postgres database on Supabase.
 
-## 1. Set up the Google Sheet + Apps Script backend
+## How it fits together
 
-1. Create a new Google Sheet (e.g. named `MilkDistributionDB`).
-2. In the Sheet, go to **Extensions > Apps Script**.
-3. Delete the default `Code.gs` contents and paste in the contents of [`apps-script/Code.gs`](apps-script/Code.gs) from this repo.
-4. In the Apps Script editor, select the `setup` function from the function dropdown and click **Run**. Grant the permissions it asks for. This creates the `Products`, `Routes`, `Trips`, and `TripItems` tabs with headers in your Sheet.
-5. Edit the `setAppToken` function: replace `REPLACE_WITH_YOUR_PASSCODE` with a passcode of your choice — **at least 12 characters**; a few unrelated words works well (this is what you and your staff will type into the app, and it also authenticates every API request). Select `setAppToken` from the function dropdown and click **Run** once. You can change it later by editing and re-running this function.
-   - Optionally, do the same with `setAdminToken` to set a separate **admin passcode** that only the owner knows. It's needed to reopen a settled trip; until it's set, reopening is disabled.
-   - Check **File > Settings > Time zone** in the Sheet is your local time zone (e.g. Asia/Kolkata).
-6. Click **Deploy > New deployment**.
-   - Type: **Web app**
-   - Execute as: **Me**
-   - Who has access: **Anyone**
-   - Click **Deploy**, authorize again if prompted.
-7. Copy the **Web app URL** it gives you (ends in `/exec`). You'll need this for the frontend.
+- **Database (Supabase):** tables in a private `app` schema that the browser can't reach. The app talks only to the functions in [`supabase/migrations/…_api.sql`](supabase/migrations/20260929000002_api.sql) (called as `/rest/v1/rpc/<name>`). Each function checks the caller's login session and role before doing anything, and runs as one transaction.
+- **Logins:** staff and shop owners log in with **phone number + 6-digit PIN**. PINs are stored only as bcrypt hashes; 5 wrong PINs lock that account for 15 minutes.
+  - **Admins** manage products, routes, shops and staff, and can reopen settled trips.
+  - **Staff** dispatch and settle trips and see History and Analytics.
+  - **Shop owners** only see products, prices and their own orders.
+- **Website:** everything goes through [`src/api.ts`](src/api.ts). Without Supabase settings, the app runs in **demo mode** with sample data.
 
-If you ever edit `Code.gs` again, use **Deploy > Manage deployments > Edit > New version** to push the update to the same URL, then run `setup` once more — it's safe to re-run, and it adds any new columns (for example `DispatchedBy`, `SettledBy`, `ReopenedBy`, `ReopenedAt` on the `Trips` tab) without touching existing data.
+## 1. Create the database (Supabase)
 
-## 2. Run the frontend locally
+1. Sign up at [supabase.com](https://supabase.com) and create a **new project**. Pick region **Mumbai (ap-south-1)** and save the database password somewhere safe.
+2. Open **SQL Editor → New query**. Paste in the whole of [`supabase/migrations/20260929000001_schema.sql`](supabase/migrations/20260929000001_schema.sql) and click **Run**. Then do the same with [`supabase/migrations/20260929000002_api.sql`](supabase/migrations/20260929000002_api.sql).
+3. Create your own admin login in a new query, with your name, phone number and a 6-digit PIN of your choice:
+   ```sql
+   select app.create_admin('Your name', '98480xxxxx', '123456');
+   ```
+4. Go to **Project Settings → API** (or the **Connect** button) and copy the **Project URL** and the **publishable** key (older projects call it the **anon** key). These go in the website settings below.
+
+Everyone else (staff and shops) is added from inside the app.
+
+## 2. Moving data from the Google Sheet (one time)
+
+If you used the earlier Google Sheets version, bring all its data across, including trip history and shop PINs:
+
+1. In the Google Sheet, open each tab (**Products, Routes, Trips, TripItems, Shops, Indents**) and use **File → Download → Comma Separated Values (.csv)**. Put the files in one folder.
+2. Run:
+   ```bash
+   node scripts/import-from-sheets.mjs ~/Downloads/milk-export
+   ```
+   This writes `import.sql` into that folder and prints what it found, plus any rows it had to skip and why. If it asks, add `--dates=dmy` (dates like 28/09/2026) or `--dates=mdy` (9/28/2026).
+3. Open `import.sql`, paste it into the Supabase **SQL Editor** and **Run**. It loads everything in one transaction. It's safe to re-run: rows that already exist are skipped.
+
+Shops keep their existing PINs, which are upgraded to the new hashing on each shop's first login. Staff get new personal logins (see **Staff** below).
+
+## 3. Put the website online (Cloudflare Pages)
+
+1. Sign up at [dash.cloudflare.com](https://dash.cloudflare.com), then go to **Workers & Pages → Create → Pages → Connect to Git** and pick this GitHub repository.
+2. Build settings:
+   - Framework preset: **Vite** (or None)
+   - Build command: `npm run build`
+   - Build output directory: `dist`
+3. Under **Environment variables**, add:
+   - `VITE_SUPABASE_URL` = the Project URL from step 1.4
+   - `VITE_SUPABASE_KEY` = the publishable/anon key from step 1.4
+4. **Save and Deploy.** Every push to `main` then redeploys automatically. Your site gets an address like `milk-distribution.pages.dev`; you can add your own domain later.
+
+The publishable key is meant to be public: on its own it can only call the functions above, which all require a valid login.
+
+## Run it locally
 
 ```bash
 npm install
-cp .env.example .env
-# edit .env and set VITE_API_URL to the Web app URL from step 1.7
+cp .env.example .env   # fill in the two Supabase values, or leave them empty for demo mode
 npm run dev
 ```
 
-Open the printed local URL, enter your name and the passcode you set in `setAppToken`, and you're in.
+**Demo mode** logins: admin `9000000009` with PIN `999999`, staff `9000000008` with PIN `888888`, shop `9000000001` with PIN `111111`.
 
-Leave `VITE_API_URL` unset to try the app in **demo mode** with in-memory data: the passcode is `demo` and the admin passcode is `admin`.
+## Staff
 
-## 3. Add your master data
+**Staff** (admins only) lists everyone who can log in. **Add a person** creates their login with a 6-digit PIN, shown once. Tap **Share on WhatsApp** to send it. Make someone an **Admin** to let them manage products, routes, shops and staff and reopen trips. **New PIN** replaces a forgotten PIN and logs them out on other phones. Deactivating someone logs them out everywhere immediately.
 
-Once logged in, go to **Products** and add your product list with prices, then go to **Routes** and add your 5 routes (name, villages, default vehicle, default driver). Routes and products can be edited or deactivated later without deleting history.
-
-## 4. Deploy to GitHub Pages
-
-1. Push this repo to GitHub.
-2. In the repo, go to **Settings > Secrets and variables > Actions** and add a repository secret named `VITE_API_URL` with the Apps Script Web app URL from step 1.7.
-3. Go to **Settings > Pages** and set **Source** to **GitHub Actions**.
-4. Push to `main` (or run the "Deploy to GitHub Pages" workflow manually from the Actions tab). The site will build and publish automatically.
+The name on each trip's "dispatched by" and "settled by" is the logged-in person's, so it can be trusted.
 
 ## Shop orders
 
-Shops can place their own orders instead of phoning them in:
-
-1. Go to **Shops** and add each shop: name, owner, WhatsApp number and the route that serves it. Saving creates a **6-digit PIN**, shown once — tap **Share on WhatsApp** to send the owner the link, their phone number and PIN. **New PIN** replaces a lost or leaked PIN (the old one stops working).
-2. The shop owner opens the link (the site address ending in `#/order`, also linked from the staff login screen), logs in with phone + PIN and enters quantities for each upcoming delivery. They can change an order until its cutoff:
+1. Go to **Shops** and add each shop: name, owner, WhatsApp number and the route that serves it. Saving creates a **6-digit PIN**, shown once. Tap **Share on WhatsApp** to send the owner the link, their phone number and PIN. **New PIN** replaces a lost or leaked PIN.
+2. The shop owner opens the link (the site address ending in `#/order`, also linked from the staff login screen), logs in with phone + PIN, and enters quantities for each upcoming delivery. They can change an order until its cutoff:
    - **Morning** delivery: by **9 PM the night before**
    - **Evening** delivery: by **12 noon the same day**
 
-   Cutoffs use the spreadsheet's time zone (**File > Settings**), so make sure it's your local one.
-3. On the **Route** screen, the Dispatch form lists that trip's shop orders, shows which shops haven't ordered, and pre-fills the quantities with the order totals — add extra for walk-in sales. The **Dashboard** shows how many shops on each route have ordered.
-
-Shop owners only ever see products, prices and their own orders; their PIN can't open any staff screen. PINs are stored only as salted hashes, and a phone number is locked for 15 minutes after 5 wrong PINs (without affecting other shops or staff). Orders are kept in the **Indents** tab, one row per shop per delivery, with a readable summary column.
-
-Upgrading an existing install: paste the new `Code.gs`, deploy a new version, and **run `setup` once** to add the `Shops` and `Indents` tabs.
+   Cutoffs use India time (the `timezone` row in the `app.settings` table).
+3. On the **Route** screen, the Dispatch form lists that trip's shop orders, shows which shops haven't ordered, and pre-fills the quantities with the order totals. Add extra for walk-in sales. The **Dashboard** shows how many shops on each route have ordered.
 
 ## Daily use
 
-- **Dashboard**: today's totals (sent out, cash collected, trips awaiting return, cash short) and each route's Morning/Evening status — tap a session to go straight to it. Shortfalls show in red.
-- **Route screen**: pick a date (defaults to today). It opens whichever session still needs its return settled, and warns you if the other session is still awaiting return. **Same as last trip** fills in the quantities from the previous trip for that route and session. In the morning, enter quantities dispatched per product and hit **Dispatch**. In the evening, come back to the same route/date, enter quantities returned and the cash handed over, and hit **Settle** — the app shows the discrepancy between cash handed over and the computed amount due, and asks you to confirm before settling.
-- **Reopening**: a settled trip is locked. If it was settled by mistake, open it, expand **Reopen this trip**, and enter the admin passcode; it goes back to "awaiting return" with its figures kept, ready to correct and settle again.
-- **Products** / **Routes**: manage the master lists.
-- **History**: past trips for a route and date range (last 30 days by default), including who dispatched and settled each one, with a totals row.
-- **Analytics**: pick a range with the quick buttons (Today, Last 7 days, …). Summary cards compare the complete days of the range with the same number of days before it. Includes the sales trend (today drawn dashed while it's still in progress), cash **short** and **excess** shown separately, both per day and per driver (so a shortage on one route can't be hidden by an excess on another), return rates by day, product and route, and sales by route, product and session. Tap any chart point to see its value.
+- **Dashboard:** today's totals (sent out, cash collected, trips awaiting return, cash short) and each route's Morning/Evening status. Tap a session to go straight to it. Shortfalls show in red.
+- **Route screen:** pick a date (defaults to today). It opens whichever session still needs its return settled, and warns you if the other session is still awaiting return. **Same as last trip** fills in the quantities from the previous trip for that route and session. In the evening, enter quantities returned and the cash handed over and tap **Settle**. The app shows the discrepancy and asks you to confirm.
+- **Reopening:** a settled trip is locked. An admin can open it and tap **Reopen this trip**. It goes back to "awaiting return" with its figures kept, ready to correct and settle again.
+- **Products / Routes** (admins): manage the master lists.
+- **History:** past trips for a route and date range (last 30 days by default), including who dispatched and settled each one, with a totals row.
+- **Analytics:** pick a range with the quick buttons (Today, Last 7 days, …). Summary cards compare the complete days of the range with the same number of days before it. The page includes:
+  - the sales trend
+  - cash **short** and **excess** shown separately, per day and per driver
+  - return rates by day, product and route
+  - sales by route, product and session
 
-## Notes on security
+## Backups
 
-The passcode is the only access control, and it's also the shared secret sent with every API call and checked inside the Apps Script — so it's real enforcement, not just a UI gate. That said, this is app-level security suited to an internal single-shop tool, not encryption: anyone who has the passcode and the site URL can read and write data. Don't reuse a sensitive password as this passcode.
+The free Supabase plan doesn't include automatic backups. Every so often (weekly is a good habit), use **Table Editor →** each table **→ Export to CSV**, or run `pg_dump` with the connection string from **Project Settings → Database**.
 
-- Everyone enters their name at login; it's recorded on each trip (`DispatchedBy`, `SettledBy`, `ReopenedBy`) as an accountability trail. It isn't verified — it's a record, not a login.
-- To slow down passcode guessing, the backend refuses **all** requests after 100 wrong passcodes within 10 minutes, until 10 minutes pass without another wrong one. The downside: someone deliberately sending wrong passcodes could lock staff out for a while. It clears by itself 10 minutes after the wrong attempts stop.
-- All writes go through a script lock, so two phones saving at the same moment can't create duplicate trips.
+## Tests (for developers)
+
+`supabase/tests/` contains the database tests (they need Docker). Run them with:
+
+```bash
+node supabase/tests/run.mjs
+```
+
+They start a throwaway Postgres, load the migrations, and exercise every API function: logins and lock-outs, roles, dispatch/settle/reopen rules, shop order cutoffs, and the Sheet import.

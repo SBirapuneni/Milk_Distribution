@@ -664,3 +664,11 @@ table.line-items tfoot td {
   color: var(--color-secondary-text);
   margin: -0.25rem 0 0.5rem;
 }
+.nav-user {
+  margin-left: auto;
+  font-size: 0.85rem;
+  color: var(--color-secondary-text);
+}
+.nav-user + .link-btn {
+  margin-left: 0;
+}
