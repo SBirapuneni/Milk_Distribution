@@ -89,7 +89,7 @@ begin
           update app.trips
           set dispatched_total = disp, returned_total = ret, amount_due = disp - ret,
               cash_handed_over = cash, discrepancy = cash - (disp - ret), status = 'Settled',
-              settled_at = (d + case when s = 'Morning' then time '11:30' else time '19:30' end) at time zone app.tz(),
+              settled_at = least(now(), (d + case when s = 'Morning' then time '11:30' else time '19:30' end) at time zone app.tz()),
               settled_by = 'Kiran (sample)'
           where id = t;
         end if;

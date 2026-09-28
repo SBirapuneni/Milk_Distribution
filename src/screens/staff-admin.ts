@@ -2,6 +2,7 @@ import { navHtml, wireNav } from '../components/nav';
 import { currentStaff, getMasterData, resetStaffPin, saveStaff } from '../api';
 import type { MasterData, Staff } from '../types';
 import { escapeHtml } from '../util';
+import { alertDialog, confirmDialog, copyDialog } from '../dialog';
 
 function appLink(): string {
   return `${window.location.origin}${window.location.pathname}`;
@@ -68,13 +69,18 @@ export async function renderStaffAdmin(container: HTMLElement) {
     content.querySelectorAll<HTMLButtonElement>('.pin-btn').forEach((btn) =>
       btn.addEventListener('click', async () => {
         const person = master.staff.find((s) => s.StaffId === btn.dataset.id)!;
-        if (!window.confirm(`Create a new PIN for ${person.Name}? Their current PIN stops working and they'll be logged out on other phones.`)) return;
+        const ok = await confirmDialog({
+          title: `Create a new PIN for ${person.Name}?`,
+          message: "Their current PIN stops working and they'll be logged out on other phones.",
+          confirmLabel: 'Create new PIN',
+        });
+        if (!ok) return;
         btn.disabled = true;
         try {
           const { pin } = await resetStaffPin(person.StaffId);
           showPin(person, pin);
         } catch (err) {
-          window.alert((err as Error).message);
+          await alertDialog('Could not create a new PIN', (err as Error).message);
         } finally {
           btn.disabled = false;
         }
@@ -163,7 +169,7 @@ export async function renderStaffAdmin(container: HTMLElement) {
         await navigator.clipboard.writeText(message);
         btn.textContent = 'Copied ✓';
       } catch {
-        window.prompt('Copy this message:', message);
+        await copyDialog('Copy this message', message);
       }
     });
     pinBox.querySelector('#dismiss-pin')!.addEventListener('click', () => (pinBox.innerHTML = ''));

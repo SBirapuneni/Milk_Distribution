@@ -1,6 +1,7 @@
 import { DEMO_MODE, DEMO_SHOPS, hasShopSession, lastShopPhone, shopHome, shopLogin, shopLogout, shopSaveOrder } from '../api';
 import type { Session, ShopHome, ShopSlot } from '../types';
 import { addDays, escapeHtml, money } from '../util';
+import { confirmDialog } from '../dialog';
 
 // The shop owner's side of the app (#/order): log in with phone + PIN, then
 // place or change orders for the upcoming deliveries until their cutoff. It
@@ -184,8 +185,8 @@ function renderOrders(container: HTMLElement, home: ShopHome, selected?: { date:
   recalc();
 
   area.querySelectorAll<HTMLButtonElement>('.slot-tabs .session-tab').forEach((btn) =>
-    btn.addEventListener('click', () => {
-      if (dirty && !window.confirm('You have changes that are not saved. Switch anyway?')) return;
+    btn.addEventListener('click', async () => {
+      if (dirty && !(await confirmDialog({ title: 'Discard your changes?', message: 'You have changes that are not saved yet.', confirmLabel: 'Discard', cancelLabel: 'Keep editing', danger: true }))) return;
       renderOrders(container, home, { date: btn.dataset.date!, session: btn.dataset.session as Session });
     }),
   );

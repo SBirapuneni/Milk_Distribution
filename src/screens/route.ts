@@ -2,6 +2,7 @@ import { navHtml, wireNav } from '../components/nav';
 import { dispatchTrip, getLastTrip, getRouteDay, isAdmin, reopenTrip, saveTripProgress, settleTrip } from '../api';
 import type { Indent, Product, Route, RouteDay, Session, Shop, Trip, TripWithItems } from '../types';
 import { escapeHtml, localDateStr, money, shortDate } from '../util';
+import { confirmDialog } from '../dialog';
 
 const SESSIONS: Session[] = ['Morning', 'Evening'];
 
@@ -481,7 +482,7 @@ function wireSettleForm(
     statusEl.className = '';
 
     const { items, cashHandedOver } = currentInputs();
-    if (!confirmSettle(recalc())) return;
+    if (!(await confirmSettle(recalc()))) return;
 
     saveBtn.disabled = true;
     settleBtn.disabled = true;
@@ -498,7 +499,7 @@ function wireSettleForm(
   return saveCurrent;
 }
 
-function confirmSettle({ amountDue, cash }: { amountDue: number; cash: number }): boolean {
+function confirmSettle({ amountDue, cash }: { amountDue: number; cash: number }): Promise<boolean> {
   const discrepancy = cash - amountDue;
   const discLabel =
     discrepancy === 0 ? 'none' : discrepancy < 0 ? `${money(-discrepancy)} SHORT` : `${money(discrepancy)} excess`;
@@ -512,7 +513,12 @@ function confirmSettle({ amountDue, cash }: { amountDue: number; cash: number })
   if (cash === 0 && amountDue > 0) {
     lines.unshift('No cash has been entered!', '');
   }
-  return window.confirm(`Settle this trip?\n\n${lines.join('\n')}`);
+  return confirmDialog({
+    title: cash === 0 && amountDue > 0 ? 'Settle with no cash entered?' : 'Settle this trip?',
+    message: lines.join('\n'),
+    confirmLabel: 'Settle',
+    danger: cash === 0 && amountDue > 0,
+  });
 }
 
 function renderSettled(tripData: TripWithItems, productMap: Map<string, Product>): string {
@@ -560,13 +566,13 @@ function renderSettled(tripData: TripWithItems, productMap: Map<string, Product>
   `;
 }
 
-// Admins only (the server checks the role too).
+// Admins only (the server checks the role too). No confirmation: reopening
+// keeps all the figures, and the trip is simply settled again.
 function wireReopen(container: HTMLElement, tripData: TripWithItems, onDone: (tripData: TripWithItems) => void) {
   const btn = container.querySelector<HTMLButtonElement>('#reopen-btn');
   if (!btn) return;
   const errorEl = container.querySelector<HTMLParagraphElement>('#reopen-error')!;
   btn.addEventListener('click', async () => {
-    if (!window.confirm('Reopen this trip? It goes back to "awaiting return" with its figures kept, so it can be corrected and settled again.')) return;
     errorEl.textContent = '';
     btn.disabled = true;
     try {

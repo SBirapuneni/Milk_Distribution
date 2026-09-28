@@ -2,6 +2,7 @@ import { navHtml, wireNav } from '../components/nav';
 import { getMasterData, resetShopPin, saveShop } from '../api';
 import type { MasterData, Shop } from '../types';
 import { escapeHtml } from '../util';
+import { alertDialog, confirmDialog, copyDialog } from '../dialog';
 
 function isActive(value: boolean): boolean {
   return value !== false && String(value).toUpperCase() !== 'FALSE';
@@ -86,13 +87,18 @@ export async function renderShopsAdmin(container: HTMLElement) {
     content.querySelectorAll<HTMLButtonElement>('.pin-btn').forEach((btn) =>
       btn.addEventListener('click', async () => {
         const shop = master.shops.find((s) => s.ShopId === btn.dataset.id)!;
-        if (!window.confirm(`Create a new PIN for ${shop.Name}? Their current PIN will stop working.`)) return;
+        const ok = await confirmDialog({
+          title: `Create a new PIN for ${shop.Name}?`,
+          message: 'Their current PIN will stop working.',
+          confirmLabel: 'Create new PIN',
+        });
+        if (!ok) return;
         btn.disabled = true;
         try {
           const { pin } = await resetShopPin(shop.ShopId);
           showPin(shop, pin);
         } catch (err) {
-          window.alert((err as Error).message);
+          await alertDialog('Could not create a new PIN', (err as Error).message);
         } finally {
           btn.disabled = false;
         }
@@ -181,7 +187,7 @@ export async function renderShopsAdmin(container: HTMLElement) {
         await navigator.clipboard.writeText(message);
         btn.textContent = 'Copied ✓';
       } catch {
-        window.prompt('Copy this message:', message);
+        await copyDialog('Copy this message', message);
       }
     });
     pinBox.querySelector('#dismiss-pin')!.addEventListener('click', () => (pinBox.innerHTML = ''));
