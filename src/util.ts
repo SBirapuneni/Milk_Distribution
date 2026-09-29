@@ -8,26 +8,53 @@ export function escapeHtml(value: unknown): string {
 }
 
 // ---- Dates ------------------------------------------------------------
-// All dates are 'yyyy-MM-dd' strings in the device's local timezone. Don't
-// use toISOString() for this: it's UTC, so in India anything before 5:30 AM
-// — i.e. morning dispatch — would land on the previous day.
+// The business runs on India time, so "today" is India's date whatever the
+// device's timezone (a phone set to another timezone, or the owner checking
+// from abroad, must still see today's trips and shop orders). All dates are
+// 'yyyy-MM-dd' strings; arithmetic is done on the calendar date (UTC), never
+// on the device's local clock.
 
-export function localDateStr(d: Date = new Date()): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+export const BUSINESS_TZ = 'Asia/Kolkata';
+
+const businessParts = new Intl.DateTimeFormat('en-GB', {
+  timeZone: BUSINESS_TZ,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
+
+/** Current date and time in India. */
+export function businessNow(): { date: string; hour: number; minute: number } {
+  const parts = Object.fromEntries(businessParts.formatToParts(new Date()).map((p) => [p.type, p.value]));
+  return { date: `${parts.year}-${parts.month}-${parts.day}`, hour: Number(parts.hour) % 24, minute: Number(parts.minute) };
 }
 
-function parseDate(date: string): Date {
+/** Today's date in India, 'yyyy-MM-dd'. */
+export function localDateStr(): string {
+  return businessNow().date;
+}
+
+function ymd(date: string): [number, number, number] {
   const [y, m, d] = date.split('-').map(Number);
-  return new Date(y, m - 1, d);
+  return [y, m, d];
+}
+
+function fromUtc(t: Date): string {
+  return `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, '0')}-${String(t.getUTCDate()).padStart(2, '0')}`;
 }
 
 export function addDays(date: string, n: number): string {
-  const d = parseDate(date);
-  d.setDate(d.getDate() + n);
-  return localDateStr(d);
+  const [y, m, d] = ymd(date);
+  return fromUtc(new Date(Date.UTC(y, m - 1, d + n)));
+}
+
+/** First day of the month `offset` months from `date`'s month. */
+export function monthStart(date: string, offset = 0): string {
+  const [y, m] = ymd(date);
+  return fromUtc(new Date(Date.UTC(y, m - 1 + offset, 1)));
 }
 
 export function daysAgoStr(n: number): string {
@@ -36,7 +63,9 @@ export function daysAgoStr(n: number): string {
 
 /** Inclusive number of days from `from` to `to`. */
 export function daysBetween(from: string, to: string): number {
-  return Math.round((parseDate(to).getTime() - parseDate(from).getTime()) / 86400000) + 1;
+  const [y1, m1, d1] = ymd(from);
+  const [y2, m2, d2] = ymd(to);
+  return Math.round((Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / 86400000) + 1;
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];

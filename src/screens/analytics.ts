@@ -9,6 +9,7 @@ import {
   escapeHtml,
   localDateStr,
   money,
+  monthStart,
   moneyCompact,
   moneyRound,
   percent,
@@ -26,8 +27,7 @@ const PRESETS: { key: PresetKey; label: string }[] = [
 ];
 
 function presetRange(key: PresetKey): { from: string; to: string } {
-  const today = localDateStr();
-  const now = new Date();
+  const today = localDateStr(); // India date
   switch (key) {
     case 'today':
       return { from: today, to: today };
@@ -36,12 +36,9 @@ function presetRange(key: PresetKey): { from: string; to: string } {
     case '30d':
       return { from: addDays(today, -29), to: today };
     case 'month':
-      return { from: localDateStr(new Date(now.getFullYear(), now.getMonth(), 1)), to: today };
+      return { from: monthStart(today), to: today };
     case 'lastMonth':
-      return {
-        from: localDateStr(new Date(now.getFullYear(), now.getMonth() - 1, 1)),
-        to: localDateStr(new Date(now.getFullYear(), now.getMonth(), 0)),
-      };
+      return { from: monthStart(today, -1), to: addDays(monthStart(today), -1) };
   }
 }
 

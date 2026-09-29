@@ -1,13 +1,14 @@
 import { navHtml, wireNav } from '../components/nav';
 import { dispatchTrip, getLastTrip, getRouteDay, isAdmin, reopenTrip, saveTripProgress, settleTrip } from '../api';
 import type { Indent, Product, Route, RouteDay, Session, Shop, Trip, TripWithItems } from '../types';
-import { escapeHtml, localDateStr, money, shortDate } from '../util';
+import { businessNow, escapeHtml, localDateStr, money, shortDate } from '../util';
 import { confirmDialog } from '../dialog';
 
 const SESSIONS: Session[] = ['Morning', 'Evening'];
 
+// By India time: before 3 PM it's the Morning trip, after it the Evening one.
 function clockSession(): Session {
-  return new Date().getHours() < 15 ? 'Morning' : 'Evening';
+  return businessNow().hour < 15 ? 'Morning' : 'Evening';
 }
 
 // Tapping a quantity box selects its contents, so typing replaces the value
@@ -175,7 +176,11 @@ function renderShopOrders(orders: Indent[], routeShops: Shop[], productMap: Map<
   const shopName = new Map(routeShops.map((s) => [s.ShopId, s.Name]));
   const orderedIds = new Set(orders.map((o) => o.shopId));
   const notOrdered = routeShops.filter((s) => !orderedIds.has(s.ShopId));
-  const totals = Array.from(orderTotals(orders).entries()).map(([productId, qty]) => ({ productId, qty }));
+  // In product-list order, like the Dispatch form below.
+  const productOrder = [...productMap.keys()];
+  const totals = Array.from(orderTotals(orders).entries())
+    .map(([productId, qty]) => ({ productId, qty }))
+    .sort((a, b) => productOrder.indexOf(a.productId) - productOrder.indexOf(b.productId));
 
   return `
     <details class="shop-orders" ${orders.length ? 'open' : ''}>

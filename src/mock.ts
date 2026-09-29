@@ -10,7 +10,7 @@ import type {
   TripWithItems,
 } from './types';
 import type { DashboardData, Indent, Shop, ShopHome, ShopSlot, Staff, StaffUser } from './types';
-import { addDays, localDateStr } from './util';
+import { addDays, businessNow } from './util';
 import { computeAnalytics } from './analytics-compute';
 
 const products: Product[] = [
@@ -377,8 +377,8 @@ export async function resetShopPin(shopId: string): Promise<{ shopId: string; pi
 }
 
 function nowStamp(): string {
-  const d = new Date();
-  return `${localDateStr(d)} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const n = businessNow();
+  return `${n.date} ${String(n.hour).padStart(2, '0')}:${String(n.minute).padStart(2, '0')}`;
 }
 
 function cutoffFor(date: string, session: Session): string {
