@@ -100,12 +100,15 @@ function niceMax(v: number): number {
   return 10 * mag;
 }
 
-function frame(points: SeriesPoint[], opts: SeriesOptions) {
+/** `band`: each point gets an equal slot with the point in its middle (for
+ * columns, so the first and last bars don't sit on the chart's edges);
+ * otherwise points run edge to edge (for lines). */
+function frame(points: SeriesPoint[], opts: SeriesOptions, band = false) {
   const maxY = niceMax(Math.max(...points.map((p) => p.y), 0));
   const plotW = W - PAD_L - PAD_R;
   const plotH = H - PAD_T - PAD_B;
-  const step = points.length > 1 ? plotW / (points.length - 1) : 0;
-  const xAt = (i: number) => (points.length > 1 ? PAD_L + i * step : PAD_L + plotW / 2);
+  const step = band ? plotW / points.length : points.length > 1 ? plotW / (points.length - 1) : 0;
+  const xAt = (i: number) => (band ? PAD_L + (i + 0.5) * step : points.length > 1 ? PAD_L + i * step : PAD_L + plotW / 2);
   const yAt = (v: number) => PAD_T + plotH - (Math.max(v, 0) / maxY) * plotH;
   const baseY = PAD_T + plotH;
 
@@ -122,19 +125,22 @@ function frame(points: SeriesPoint[], opts: SeriesOptions) {
   const xLabels = labelIdxs
     .map((i) => {
       const isToday = opts.partialLast && i === n - 1;
-      const anchor = n > 1 && i === 0 ? 'start' : n > 1 && i === n - 1 ? 'end' : 'middle';
+      const anchor = band ? 'middle' : n > 1 && i === 0 ? 'start' : n > 1 && i === n - 1 ? 'end' : 'middle';
       return `<text x="${xAt(i).toFixed(1)}" y="${H - 8}" text-anchor="${anchor}" class="chart-axis-label">${isToday ? 'Today' : escapeHtml(shortDate(points[i].x))}</text>`;
     })
     .join('');
 
   // Full-height, full-step-width invisible strips: far easier to hit with a
-  // finger than a 4px dot.
-  const stripW = n > 1 ? step : plotW;
+  // finger than a 4px dot. Kept inside the plot area, so the hover shading
+  // never spills past the chart's edges.
+  const stripW = n > 1 || band ? step : plotW;
   const hits = points
     .map((p, i) => {
       const isToday = opts.partialLast && i === n - 1;
       const tip = `${isToday ? 'Today (so far)' : shortDate(p.x, true)}: ${opts.formatValue(p.y)}${p.extra ? ' · ' + p.extra : ''}`;
-      return `<rect x="${(xAt(i) - stripW / 2).toFixed(1)}" y="${PAD_T}" width="${stripW.toFixed(1)}" height="${(H - PAD_T - PAD_B).toFixed(1)}" class="chart-hit" data-tooltip="${escapeHtml(tip)}"></rect>`;
+      const x0 = Math.max(PAD_L, xAt(i) - stripW / 2);
+      const x1 = Math.min(W - PAD_R, xAt(i) + stripW / 2);
+      return `<rect x="${x0.toFixed(1)}" y="${PAD_T}" width="${(x1 - x0).toFixed(1)}" height="${plotH.toFixed(1)}" class="chart-hit" data-tooltip="${escapeHtml(tip)}"></rect>`;
     })
     .join('');
 
@@ -206,8 +212,8 @@ export function renderLineChart(points: SeriesPoint[], opts: SeriesOptions & { l
  * as cash shortages, where a line would imply values between days. */
 export function renderColumnChart(points: SeriesPoint[], opts: SeriesOptions & { label: string }): string {
   if (points.length === 0) return '<p class="muted">No data.</p>';
-  const { xAt, yAt, baseY, step, grid, xLabels, hits, markers } = frame(points, opts);
-  const barW = Math.max(3, Math.min(24, (points.length > 1 ? step : 40) * 0.7));
+  const { xAt, yAt, baseY, step, grid, xLabels, hits, markers } = frame(points, opts, true);
+  const barW = Math.max(3, Math.min(24, step * 0.7));
   const bars = points
     .map((p, i) => {
       if (p.y <= 0) return '';
