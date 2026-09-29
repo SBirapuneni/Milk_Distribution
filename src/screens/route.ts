@@ -359,23 +359,35 @@ function renderSettleForm(tripData: TripWithItems, productMap: Map<string, Produ
       ${renderAuditTrail(trip)}
     </div>
     <form id="settle-form">
+      <div class="table-scroll">
       <table class="line-items">
-        <thead><tr><th>Product</th><th>Dispatched</th><th>Returned</th><th>Returned value</th></tr></thead>
+        <thead>
+          <tr>
+            <th>Product</th><th class="num">Price</th>
+            <th class="num">Dispatched</th><th class="num">Value</th>
+            <th>Returned</th><th class="num">Returned value</th>
+            <th class="num">Net due</th>
+          </tr>
+        </thead>
         <tbody>
           ${items
             .map(
               (i) => `
-            <tr data-product-id="${escapeHtml(i.ProductId)}" data-price="${escapeHtml(i.Price)}">
+            <tr data-product-id="${escapeHtml(i.ProductId)}" data-price="${escapeHtml(i.Price)}" data-dispatched-value="${escapeHtml(i.DispatchedValue)}">
               <td>${escapeHtml(productMap.get(i.ProductId)?.Name ?? i.ProductId)}</td>
-              <td>${escapeHtml(i.QtyDispatched)}</td>
+              <td class="num">${money(i.Price)}</td>
+              <td class="num">${escapeHtml(Number(i.QtyDispatched))}</td>
+              <td class="num">${money(i.DispatchedValue)}</td>
               <td><input type="number" min="0" max="${escapeHtml(i.QtyDispatched)}" step="any" inputmode="decimal" class="qty-returned" placeholder="0" value="${Number(i.QtyReturned) ? escapeHtml(i.QtyReturned) : ''}" /></td>
-              <td class="return-value">₹0</td>
+              <td class="num return-value">₹0</td>
+              <td class="num net-due"><strong>₹0</strong></td>
             </tr>
           `,
             )
             .join('')}
         </tbody>
       </table>
+      </div>
       <p>Returned total: <span id="returned-total">₹0</span></p>
       <p>Amount due: <span id="amount-due">${money(trip.DispatchedTotal)}</span></p>
       <div class="field-row">
@@ -426,6 +438,7 @@ function wireSettleForm(
       const qty = Number(row.querySelector<HTMLInputElement>('.qty-returned')!.value) || 0;
       const value = price * qty;
       row.querySelector<HTMLTableCellElement>('.return-value')!.textContent = money(value);
+      row.querySelector<HTMLTableCellElement>('.net-due strong')!.textContent = money(Number(row.dataset.dispatchedValue) - value);
       returnedTotal += value;
     });
     const amountDue = dispatchedTotal - returnedTotal;
@@ -526,22 +539,45 @@ function renderSettled(tripData: TripWithItems, productMap: Map<string, Product>
   return `
     <div class="trip-summary settled">
       <p>Driver: ${escapeHtml(trip.Driver)} · Vehicle: ${escapeHtml(trip.Vehicle)}</p>
+      <div class="table-scroll">
       <table class="line-items">
-        <thead><tr><th>Product</th><th>Dispatched</th><th>Returned</th></tr></thead>
+        <thead>
+          <tr>
+            <th>Product</th><th class="num">Price</th>
+            <th class="num">Dispatched</th><th class="num">Value</th>
+            <th class="num">Returned</th><th class="num">Returned value</th>
+            <th class="num">Net due</th>
+          </tr>
+        </thead>
         <tbody>
           ${items
             .map(
               (i) => `
             <tr>
               <td>${escapeHtml(productMap.get(i.ProductId)?.Name ?? i.ProductId)}</td>
-              <td>${escapeHtml(i.QtyDispatched)}</td>
-              <td>${escapeHtml(i.QtyReturned)}</td>
+              <td class="num">${money(i.Price)}</td>
+              <td class="num">${escapeHtml(Number(i.QtyDispatched))}</td>
+              <td class="num">${money(i.DispatchedValue)}</td>
+              <td class="num">${escapeHtml(Number(i.QtyReturned))}</td>
+              <td class="num">${money(i.ReturnedValue)}</td>
+              <td class="num"><strong>${money(Number(i.DispatchedValue) - Number(i.ReturnedValue))}</strong></td>
             </tr>
           `,
             )
             .join('')}
         </tbody>
+        <tfoot>
+          <tr>
+            <td colspan="2">Total</td>
+            <td class="num">${escapeHtml(items.reduce((s, i) => s + Number(i.QtyDispatched), 0))}</td>
+            <td class="num">${money(trip.DispatchedTotal)}</td>
+            <td class="num">${escapeHtml(items.reduce((s, i) => s + Number(i.QtyReturned), 0))}</td>
+            <td class="num">${money(trip.ReturnedTotal)}</td>
+            <td class="num">${money(trip.AmountDue)}</td>
+          </tr>
+        </tfoot>
       </table>
+      </div>
       <p>Dispatched total: ${money(trip.DispatchedTotal)}</p>
       <p>Returned total: ${money(trip.ReturnedTotal)}</p>
       <p>Amount due: ${money(trip.AmountDue)}</p>
