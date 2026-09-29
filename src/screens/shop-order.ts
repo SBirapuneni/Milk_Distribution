@@ -66,8 +66,9 @@ function renderLogin(container: HTMLElement, phone: string, error = '') {
 function dayLabel(date: string, today: string): string {
   if (date === today) return 'Today';
   if (date === addDays(today, 1)) return 'Tomorrow';
+  // Further out: just the weekday — the tab shows the full date underneath.
   const [y, m, d] = date.split('-').map(Number);
-  return new Date(y, m - 1, d).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'short' });
+  return new Date(y, m - 1, d).toLocaleDateString('en-IN', { weekday: 'long' });
 }
 
 function slotLabel(slot: ShopSlot, today: string): string {
@@ -91,12 +92,37 @@ function cutoffLabel(cutoff: string, today: string): string {
 
 // ---- Order screen ------------------------------------------------------------
 
+// Same rule as the server: Morning on D closes at 21:00 on D-1, Evening at 12:00 on D.
+function cutoffFor(date: string, session: Session): string {
+  return session === 'Morning' ? `${addDays(date, -1)} 21:00` : `${date} 12:00`;
+}
+
+/** Any delivery as a slot, with this shop's existing order for it (if any). */
+function slotFor(home: ShopHome, date: string, session: Session): ShopSlot {
+  const quick = home.slots.find((s) => s.date === date && s.session === session);
+  if (quick) return quick;
+  const order = (home.orders ?? []).find((o) => o.date === date && o.session === session) ?? null;
+  return { date, session, cutoff: cutoffFor(date, session), order };
+}
+
+const slotKey = (s: { date: string; session: Session }) => `${s.date} ${s.session === 'Morning' ? 0 : 1}`;
+
 function renderOrders(container: HTMLElement, home: ShopHome, selected?: { date: string; session: Session }, status = '') {
   const today = home.now.slice(0, 10);
-  const slot =
-    home.slots.find((s) => selected && s.date === selected.date && s.session === selected.session) ??
-    home.slots.find((s) => !s.order) ??
-    home.slots[0];
+  home.maxDate ??= addDays(today, 30); // older server without advance orders
+
+  // Tabs: the next few deliveries, plus any advance orders further out.
+  const tabs: ShopSlot[] = [...home.slots];
+  (home.orders ?? []).forEach((o) => {
+    if (!tabs.some((t) => t.date === o.date && t.session === o.session)) tabs.push(slotFor(home, o.date, o.session));
+  });
+  tabs.sort((a, b) => slotKey(a).localeCompare(slotKey(b)));
+
+  const slot: ShopSlot | undefined = selected
+    ? slotFor(home, selected.date, selected.session)
+    : (home.slots.find((s) => !s.order) ?? home.slots[0]);
+  const isOpen = !!slot && slot.cutoff > home.now && slot.date <= home.maxDate;
+  const isTab = !!slot && tabs.some((t) => t.date === slot.date && t.session === slot.session);
 
   container.innerHTML = `
     <main class="page shop-page">
@@ -107,7 +133,6 @@ function renderOrders(container: HTMLElement, home: ShopHome, selected?: { date:
         </div>
         <button type="button" id="shop-logout" class="secondary">Log out</button>
       </div>
-      ${slot ? '' : '<p>No deliveries are open for ordering right now. Please check back later.</p>'}
       <div id="slot-area"></div>
     </main>
   `;
@@ -117,25 +142,47 @@ function renderOrders(container: HTMLElement, home: ShopHome, selected?: { date:
     renderLogin(container, lastShopPhone());
   });
 
-  if (!slot) return;
   const area = container.querySelector<HTMLDivElement>('#slot-area')!;
-  const qtyFor = (productId: string) => slot.order?.items.find((i) => i.productId === productId)?.qty ?? 0;
+  const qtyFor = (productId: string) => slot?.order?.items.find((i) => i.productId === productId)?.qty ?? 0;
+  const ordered = (s: ShopSlot) => !!s.order && s.order.items.length > 0;
 
   area.innerHTML = `
     <div class="session-tabs slot-tabs">
-      ${home.slots
+      ${tabs
         .map(
-          (s) => `<button type="button" class="session-tab ${s === slot ? 'active' : ''}" data-session="${s.session}" data-date="${s.date}">
+          (s) => `<button type="button" class="session-tab ${slot && s.date === slot.date && s.session === slot.session ? 'active' : ''}" data-session="${s.session}" data-date="${s.date}">
             ${escapeHtml(slotLabel(s, today))}
             <span class="tab-date">${escapeHtml(dateLabel(s.date))}</span>
-            <span class="tab-status ${s.order && s.order.items.length ? '' : 'pending'}">${s.order && s.order.items.length ? 'Ordered ✓' : 'Not ordered'}</span>
+            <span class="tab-status ${ordered(s) ? '' : 'pending'}">${ordered(s) ? 'Ordered ✓' : 'Not ordered'}</span>
           </button>`,
         )
         .join('')}
     </div>
+    <div class="other-date ${slot && !isTab ? 'active' : ''}">
+      <label>Order for another date
+        <input type="date" id="other-date" min="${escapeHtml(today)}" max="${escapeHtml(home.maxDate)}" value="${slot && !isTab ? escapeHtml(slot.date) : ''}" />
+      </label>
+      <div class="session-picks">
+        ${(['Morning', 'Evening'] as Session[])
+          .map(
+            (s) => `<button type="button" class="session-pick ${slot && !isTab && slot.session === s ? 'active' : ''}" data-session="${s}">${s}</button>`,
+          )
+          .join('')}
+      </div>
+      <p class="muted small">Up to ${escapeHtml(dateLabel(home.maxDate))}.</p>
+    </div>
+    ${
+      !slot
+        ? '<p>No deliveries are open right now. Pick a date above to order ahead.</p>'
+        : `
     <h2 class="delivery-heading">${slot.session === 'Morning' ? '☀️ Morning' : '🌙 Evening'} delivery · ${escapeHtml(dateLabel(slot.date, true))}</h2>
-    <p class="cutoff">Place or change this order until <strong>${escapeHtml(cutoffLabel(slot.cutoff, today))}</strong>.</p>
+    ${
+      isOpen
+        ? `<p class="cutoff">Place or change this order until <strong>${escapeHtml(cutoffLabel(slot.cutoff, today))}</strong>.</p>`
+        : `<p class="error">Ordering for this delivery closed at ${escapeHtml(cutoffLabel(slot.cutoff, today))}.</p>`
+    }
     <form id="order-form">
+      <fieldset ${isOpen ? '' : 'disabled'} class="plain-fieldset">
       <div class="table-scroll">
       <table class="line-items">
         <thead><tr><th>Product</th><th class="num">Price</th><th>Quantity</th><th class="num">Amount</th></tr></thead>
@@ -161,16 +208,47 @@ function renderOrders(container: HTMLElement, home: ShopHome, selected?: { date:
         ${home.lastOrder ? '<button type="button" id="copy-last" class="secondary">Same as last order</button>' : ''}
         <button type="button" id="clear-order" class="secondary">Clear</button>
       </div>
+      </fieldset>
       <p id="order-status" class="${status ? 'ok' : ''}">${escapeHtml(status)}</p>
-    </form>
+    </form>`
+    }
   `;
 
+  // Picking a date/session (tab or "another date") — confirm first if there are unsaved edits.
+  let dirty = false;
+  const switchTo = async (date: string, session: Session) => {
+    if (dirty && !(await confirmDialog({ title: 'Discard your changes?', message: 'You have changes that are not saved yet.', confirmLabel: 'Discard', cancelLabel: 'Keep editing', danger: true }))) return;
+    renderOrders(container, home, { date, session });
+  };
+  area.querySelectorAll<HTMLButtonElement>('.slot-tabs .session-tab').forEach((btn) =>
+    btn.addEventListener('click', () => switchTo(btn.dataset.date!, btn.dataset.session as Session)),
+  );
+  const otherDate = area.querySelector<HTMLInputElement>('#other-date')!;
+  const pickSession = (session: Session) => {
+    const date = otherDate.value;
+    if (!date) {
+      otherDate.focus();
+      otherDate.showPicker?.();
+      return;
+    }
+    switchTo(date, session);
+  };
+  area.querySelectorAll<HTMLButtonElement>('.session-pick').forEach((btn) =>
+    btn.addEventListener('click', () => pickSession(btn.dataset.session as Session)),
+  );
+  otherDate.addEventListener('change', () => {
+    if (!otherDate.value) return;
+    // Default to Morning unless that delivery has already closed.
+    const session: Session = cutoffFor(otherDate.value, 'Morning') > home.now ? 'Morning' : 'Evening';
+    switchTo(otherDate.value, session);
+  });
+
+  if (!slot) return;
   const form = area.querySelector<HTMLFormElement>('#order-form')!;
   const rows = Array.from(form.querySelectorAll<HTMLTableRowElement>('tbody tr'));
   const totalEl = form.querySelector<HTMLSpanElement>('#order-total')!;
   const statusEl = form.querySelector<HTMLParagraphElement>('#order-status')!;
   const inputOf = (row: HTMLTableRowElement) => row.querySelector<HTMLInputElement>('.qty-input')!;
-  let dirty = false;
 
   function recalc() {
     let total = 0;
@@ -193,12 +271,7 @@ function renderOrders(container: HTMLElement, home: ShopHome, selected?: { date:
   });
   recalc();
 
-  area.querySelectorAll<HTMLButtonElement>('.slot-tabs .session-tab').forEach((btn) =>
-    btn.addEventListener('click', async () => {
-      if (dirty && !(await confirmDialog({ title: 'Discard your changes?', message: 'You have changes that are not saved yet.', confirmLabel: 'Discard', cancelLabel: 'Keep editing', danger: true }))) return;
-      renderOrders(container, home, { date: btn.dataset.date!, session: btn.dataset.session as Session });
-    }),
-  );
+
 
   form.querySelector('#copy-last')?.addEventListener('click', () => {
     const last = new Map(home.lastOrder!.items.map((i) => [i.productId, i.qty]));

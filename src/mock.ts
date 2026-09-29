@@ -381,6 +381,8 @@ function nowStamp(): string {
   return `${n.date} ${String(n.hour).padStart(2, '0')}:${String(n.minute).padStart(2, '0')}`;
 }
 
+const MAX_ORDER_DAYS = 30;
+
 function cutoffFor(date: string, session: Session): string {
   return session === 'Morning' ? `${addDays(date, -1)} 21:00` : `${date} 12:00`;
 }
@@ -414,7 +416,12 @@ function shopHome(shop: Shop): ShopHome {
     mine
       .filter((o) => o.items.length && `${o.date} ${o.session}` < firstOpen)
       .sort((a, b) => (b.date + b.session).localeCompare(a.date + a.session))[0] ?? null;
+  const today = nowStamp().slice(0, 10);
   return {
+    orders: mine
+      .filter((o) => o.date >= today && o.items.length)
+      .sort((a, b) => (a.date + (a.session === 'Evening' ? 1 : 0)).localeCompare(b.date + (b.session === 'Evening' ? 1 : 0))),
+    maxDate: addDays(today, MAX_ORDER_DAYS),
     shop: { name: shop.Name, ownerName: shop.OwnerName, routeName: route?.Name ?? '' },
     products: products
       .filter((p) => p.Active !== false)
@@ -438,7 +445,8 @@ export async function shopCall(token: string, fn: string, payload: Record<string
   if (fn !== 'shop_save_order') throw new Error('Unknown action');
 
   const { date, session } = payload as { date: string; session: Session };
-  if (!openSlots().some((s) => s.date === date && s.session === session)) throw new Error('Ordering for this delivery has closed.');
+  if (date > addDays(nowStamp().slice(0, 10), MAX_ORDER_DAYS)) throw new Error(`You can order up to ${MAX_ORDER_DAYS} days ahead.`);
+  if (cutoffFor(date, session) <= nowStamp()) throw new Error('Ordering for this delivery has closed.');
   const items = ((payload.items as { productId: string; qty: number }[]) || []).filter((i) => Number(i.qty) > 0);
   const total = items.reduce((sum, i) => sum + i.qty * (products.find((p) => p.ProductId === i.productId)?.Price ?? 0), 0);
   const existing = indents.find((o) => o.shopId === shop.ShopId && o.date === date && o.session === session);

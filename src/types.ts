@@ -124,9 +124,11 @@ export interface ShopSlot {
 export interface ShopHome {
   shop: { name: string; ownerName: string; routeName: string };
   products: ShopProduct[];
-  slots: ShopSlot[];
+  slots: ShopSlot[]; // the next few open deliveries (quick tabs)
+  orders: Indent[]; // all of this shop's orders for today or later, incl. advance orders
   lastOrder: Indent | null;
-  now: string;
+  maxDate: string; // last date the shop may order for
+  now: string; // 'yyyy-MM-dd HH:mm', India time
 }
 
 /** Everything the Route screen needs, in one request. */

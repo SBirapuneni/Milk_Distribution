@@ -731,3 +731,52 @@ button.danger:hover {
   margin: 0.5rem 0 0.25rem;
   font-size: 1.15rem;
 }
+
+/* ---- Shop orders: "Order for another date" ---- */
+.other-date {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.5rem 0.75rem;
+  margin: 0.25rem 0 1rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius);
+}
+.other-date.active {
+  border-style: solid;
+  border-color: var(--color-primary);
+}
+.other-date label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--color-secondary-text);
+}
+.session-picks {
+  display: flex;
+  gap: 0.4rem;
+}
+.session-pick {
+  background: var(--color-surface);
+  color: var(--color-secondary-text);
+  border: 1px solid var(--color-border);
+  padding: 0.5rem 0.9rem;
+}
+.session-pick.active {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: white;
+}
+.other-date .small {
+  margin: 0;
+  font-size: 0.8rem;
+  flex-basis: 100%;
+}
+.plain-fieldset {
+  border: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}

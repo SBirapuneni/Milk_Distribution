@@ -239,6 +239,16 @@ try {
   assert.equal(api('shop_home', {}, SH).lastOrder.date, '2026-09-29');
   ok('cutoffs: Morning closes 9 PM the night before, Evening at noon; last order found');
 
+  // Advance orders (clock: 2026-09-29 12:01)
+  home = api('shop_save_order', { date: '2026-10-05', session: 'Morning', items: [{ productId: P1, qty: 100 }] }, SH);
+  assert.ok(home.orders.some((o) => o.date === '2026-10-05' && o.session === 'Morning' && o.total === 5400));
+  assert.equal(home.maxDate, '2026-10-29');
+  assert.ok(!home.slots.some((s) => s.date === '2026-10-05'), 'quick tabs stay the next few deliveries');
+  assert.match(apiError('shop_save_order', { date: '2026-10-30', session: 'Morning', items: [{ productId: P1, qty: 1 }] }, SH).message, /up to 30 days/);
+  api('shop_save_order', { date: '2026-10-05', session: 'Morning', items: [] }, SH); // cancel = empty order
+  assert.ok(!api('shop_home', {}, SH).orders.some((o) => o.date === '2026-10-05'));
+  ok('advance orders up to 30 days ahead; listed in orders; can be cancelled; beyond 30 days refused');
+
   for (let i = 0; i < 5; i++) api('shop_login', { phone: '9000000002', pin: '000000' });
   assert.match(api('shop_login', { phone: '9000000002', pin: shop2.pin }).error, /Too many wrong PINs/);
   assert.equal(api('shop_login', { phone: '9848012345', pin: shop1.pin }).ok, true);
