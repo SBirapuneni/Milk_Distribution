@@ -74,6 +74,14 @@ export interface SeriesOptions {
   formatAxis: (n: number) => string;
   /** Last point is today and still incomplete: drawn dashed/hollow. */
   partialLast?: boolean;
+  /** Numbered dashed lines just after these dates (e.g. the last trip of a
+   * closed route), explained in a key under the chart — see chartMarkers(). */
+  markers?: ChartMarker[];
+}
+
+export interface ChartMarker {
+  after: string; // yyyy-MM-dd: the line is drawn between this day and the next
+  text: string;
 }
 
 const W = 640;
@@ -130,7 +138,24 @@ function frame(points: SeriesPoint[], opts: SeriesOptions) {
     })
     .join('');
 
-  return { xAt, yAt, baseY, step, grid, xLabels, hits };
+  const markers = (opts.markers ?? [])
+    .map((m, k) => {
+      const i = points.findIndex((p) => p.x === m.after);
+      if (i < 0 || i >= n - 1) return '';
+      const x = (xAt(i) + xAt(i + 1)) / 2;
+      return `<line x1="${x.toFixed(1)}" y1="${PAD_T + 12}" x2="${x.toFixed(1)}" y2="${baseY}" class="chart-marker"></line>
+        <circle cx="${x.toFixed(1)}" cy="${PAD_T + 2}" r="10" class="chart-marker-badge"></circle>
+        <text x="${x.toFixed(1)}" y="${PAD_T + 2}" text-anchor="middle" dominant-baseline="central" class="chart-marker-num">${k + 1}</text>`;
+    })
+    .join('');
+
+  return { xAt, yAt, baseY, step, grid, xLabels, hits, markers };
+}
+
+/** The key for a chart's markers, numbered to match the badges. */
+export function chartMarkers(markers: ChartMarker[] | undefined): string {
+  if (!markers?.length) return '';
+  return `<ol class="chart-markers">${markers.map((m) => `<li>${escapeHtml(m.text)}</li>`).join('')}</ol>`;
 }
 
 function svg(body: string, label: string): string {
@@ -142,7 +167,7 @@ function svg(body: string, label: string): string {
 /** A single-series trend line over dates, with y-axis gridlines. */
 export function renderLineChart(points: SeriesPoint[], opts: SeriesOptions & { label: string }): string {
   if (points.length === 0) return '<p class="muted">No data.</p>';
-  const { xAt, yAt, baseY, grid, xLabels, hits } = frame(points, opts);
+  const { xAt, yAt, baseY, grid, xLabels, hits, markers } = frame(points, opts);
   const n = points.length;
   const coords = points.map((p, i) => ({ x: xAt(i), y: yAt(p.y) }));
   const pathOf = (cs: { x: number; y: number }[]) =>
@@ -170,7 +195,7 @@ export function renderLineChart(points: SeriesPoint[], opts: SeriesOptions & { l
     `${grid}
     <path d="${area}" fill="${opts.color}" opacity="0.1" stroke="none"></path>
     <path d="${solidPath}" fill="none" stroke="${opts.color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
-    ${dashed}${dots}${xLabels}${hits}`,
+    ${dashed}${dots}${markers}${xLabels}${hits}`,
     opts.label,
   );
 }
@@ -181,7 +206,7 @@ export function renderLineChart(points: SeriesPoint[], opts: SeriesOptions & { l
  * as cash shortages, where a line would imply values between days. */
 export function renderColumnChart(points: SeriesPoint[], opts: SeriesOptions & { label: string }): string {
   if (points.length === 0) return '<p class="muted">No data.</p>';
-  const { xAt, yAt, baseY, step, grid, xLabels, hits } = frame(points, opts);
+  const { xAt, yAt, baseY, step, grid, xLabels, hits, markers } = frame(points, opts);
   const barW = Math.max(3, Math.min(24, (points.length > 1 ? step : 40) * 0.7));
   const bars = points
     .map((p, i) => {
@@ -191,7 +216,7 @@ export function renderColumnChart(points: SeriesPoint[], opts: SeriesOptions & {
       return `<rect x="${(xAt(i) - barW / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${(baseY - y).toFixed(1)}" rx="2" fill="${opts.color}"${partial ? ' opacity="0.5"' : ''}></rect>`;
     })
     .join('');
-  return svg(`${grid}${bars}${xLabels}${hits}`, opts.label);
+  return svg(`${grid}${bars}${markers}${xLabels}${hits}`, opts.label);
 }
 
 // ---- Horizontal bar list -----------------------------------------------------
@@ -226,4 +251,75 @@ export function renderBarList(rows: BarRow[]): string {
         .join('')}
     </div>
   `;
+}
+
+// ---- Donut (pie) chart ---------------------------------------------------------
+
+export interface PieSlice {
+  label: string;
+  value: number;
+  color?: string;
+}
+
+const PIE_COLORS = ['var(--series-1)', 'var(--series-3)', 'var(--series-2)', 'var(--series-6)', 'var(--series-4)', 'var(--series-5)', 'var(--color-muted)'];
+
+/** A fixed color per position, so the same item can keep its color across charts. */
+export function pieColor(i: number): string {
+  return PIE_COLORS[i % PIE_COLORS.length];
+}
+
+/** Share of a whole as a donut, with a key listing every slice's value and
+ * percentage (so nothing depends on hovering). Beyond `maxSlices`, the
+ * smallest slices are combined into "Other". */
+export function renderDonut(
+  slices: PieSlice[],
+  opts: { formatValue: (n: number) => string; centerLabel: string; label: string; maxSlices?: number },
+): string {
+  let rows = slices.filter((s) => s.value > 0).sort((a, b) => b.value - a.value);
+  const total = rows.reduce((sum, s) => sum + s.value, 0);
+  if (total <= 0) return '<p class="muted">No data.</p>';
+  const max = opts.maxSlices ?? 6;
+  if (rows.length > max) {
+    const rest = rows.slice(max - 1);
+    rows = [...rows.slice(0, max - 1), { label: `Other (${rest.length})`, value: rest.reduce((sum, s) => sum + s.value, 0), color: 'var(--color-muted)' }];
+  }
+  const colored = rows.map((s, i) => ({ ...s, color: s.color || PIE_COLORS[i % PIE_COLORS.length] }));
+
+  const R = 70;
+  const C = 2 * Math.PI * R;
+  const gap = colored.length > 1 ? 1.5 : 0; // thin separator between slices
+  let offset = 0;
+  const arcs = colored
+    .map((s) => {
+      const len = (s.value / total) * C;
+      const tip = `${s.label}: ${opts.formatValue(s.value)} (${pct(s.value / total)})`;
+      const arc = `<circle cx="100" cy="100" r="${R}" fill="none" stroke="${s.color}" stroke-width="32"
+        stroke-dasharray="${Math.max(len - gap, 0.5).toFixed(2)} ${C.toFixed(2)}" stroke-dashoffset="${(-offset).toFixed(2)}"
+        transform="rotate(-90 100 100)" class="pie-slice" data-tooltip="${escapeHtml(tip)}"></circle>`;
+      offset += len;
+      return arc;
+    })
+    .join('');
+
+  return `
+    <div class="pie">
+      <svg viewBox="0 0 200 200" class="pie-chart" role="img" aria-label="${escapeHtml(opts.label)}">
+        ${arcs}
+        <text x="100" y="92" text-anchor="middle" class="pie-center-label">${escapeHtml(opts.centerLabel)}</text>
+        <text x="100" y="116" text-anchor="middle" class="pie-center-value">${escapeHtml(opts.formatValue(total))}</text>
+      </svg>
+      <ul class="pie-key">
+        ${colored
+          .map(
+            (s) => `<li><span class="pie-dot" style="background: ${s.color}"></span><span class="pie-name">${escapeHtml(s.label)}</span>
+              <span class="pie-pct">${pct(s.value / total)}</span><span class="pie-val">${escapeHtml(opts.formatValue(s.value))}</span></li>`,
+          )
+          .join('')}
+      </ul>
+    </div>`;
+}
+
+function pct(x: number): string {
+  const v = x * 100;
+  return `${v >= 10 || v === 0 ? Math.round(v) : v.toFixed(1)}%`;
 }

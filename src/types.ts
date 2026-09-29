@@ -170,6 +170,8 @@ export interface AnalyticsByRoute {
   excess: number;
   tripCount: number;
   revenue: number;
+  firstDate: string; // first and last settled trip in the range
+  lastDate: string;
 }
 
 export interface AnalyticsByDriver {
@@ -198,6 +200,8 @@ export interface AnalyticsByProduct {
   returnedValue: number;
   revenue: number;
   returnRate: number;
+  firstDate: string; // first and last settled trip carrying it in the range
+  lastDate: string;
 }
 
 export interface Analytics {

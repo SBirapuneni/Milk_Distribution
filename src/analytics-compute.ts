@@ -32,7 +32,7 @@ export function computeAnalytics(src: AnalyticsSource, payload: { dateFrom?: str
   const routeMap = new Map(Object.entries(src.routeNames));
   const productMap = new Map(Object.entries(src.productNames));
   const tripIdSet = new Set(settled.map((t) => t.TripId));
-  const items = src.items.filter((i) => tripIdSet.has(i.TripId));
+  const items = src.items.filter((i) => tripIdSet.has(i.TripId) && (Number(i.QtyDispatched) || 0) > 0);
 
   let totalDispatched = 0;
   let totalReturned = 0;
@@ -87,9 +87,13 @@ export function computeAnalytics(src: AnalyticsSource, payload: { dateFrom?: str
         excess: 0,
         tripCount: 0,
         revenue: 0,
+        firstDate: t.Date,
+        lastDate: t.Date,
       });
     }
     const byRoute = byRouteMap.get(t.RouteId)!;
+    if (t.Date < byRoute.firstDate) byRoute.firstDate = t.Date;
+    if (t.Date > byRoute.lastDate) byRoute.lastDate = t.Date;
     byRoute.dispatched += dispatched;
     byRoute.returned += returned;
     byRoute.discrepancy += discrepancy;
@@ -118,8 +122,10 @@ export function computeAnalytics(src: AnalyticsSource, payload: { dateFrom?: str
     }
   });
 
+  const tripDate = new Map(settled.map((t) => [t.TripId, t.Date]));
   const byProductMap = new Map<string, AnalyticsByProduct>();
   items.forEach((i) => {
+    const date = tripDate.get(i.TripId)!;
     if (!byProductMap.has(i.ProductId)) {
       byProductMap.set(i.ProductId, {
         productId: i.ProductId,
@@ -130,9 +136,13 @@ export function computeAnalytics(src: AnalyticsSource, payload: { dateFrom?: str
         returnedValue: 0,
         revenue: 0,
         returnRate: 0,
+        firstDate: date,
+        lastDate: date,
       });
     }
     const p = byProductMap.get(i.ProductId)!;
+    if (date < p.firstDate) p.firstDate = date;
+    if (date > p.lastDate) p.lastDate = date;
     p.qtyDispatched += Number(i.QtyDispatched) || 0;
     p.qtyReturned += Number(i.QtyReturned) || 0;
     p.dispatchedValue += Number(i.DispatchedValue) || 0;

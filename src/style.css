@@ -399,6 +399,131 @@ table.line-items .qty-returned {
 .chart-hit:hover {
   fill: var(--color-track-bg);
 }
+.chart-marker {
+  stroke: var(--color-secondary-text);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 4;
+}
+.chart-marker-badge {
+  fill: var(--color-text);
+}
+.chart-marker-num {
+  fill: var(--color-bg);
+  font-size: 13px;
+  font-weight: 700;
+}
+.chart-markers {
+  margin: -1rem 0 1.5rem;
+  padding-left: 1.4rem;
+  font-size: 0.8rem;
+  color: var(--color-secondary-text);
+}
+.chart-markers li::marker {
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.pie {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  margin: 0.75rem 0 1.5rem;
+}
+.pie-chart {
+  width: 170px;
+  flex: none;
+}
+.pie-slice {
+  cursor: pointer;
+}
+.pie-slice:hover {
+  opacity: 0.8;
+}
+.pie-center-label {
+  fill: var(--color-secondary-text);
+  font-size: 13px;
+}
+.pie-center-value {
+  fill: var(--color-text);
+  font-size: 17px;
+  font-weight: 700;
+}
+.pie-key {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+}
+.pie-key li {
+  display: grid;
+  grid-template-columns: 0.7rem 1fr auto auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+.pie-dot {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 3px;
+}
+.pie-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pie-pct {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.pie-val {
+  color: var(--color-secondary-text);
+  font-variant-numeric: tabular-nums;
+  min-width: 4.5rem;
+  text-align: right;
+}
+.pie-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 2rem;
+}
+.pie-row .pie-chart {
+  width: 130px;
+}
+.pie-row .pie-val {
+  min-width: 0;
+}
+@media (max-width: 760px) {
+  .pie-row {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 480px) {
+  .pie {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .pie-chart,
+  .pie-row .pie-chart {
+    width: 180px;
+    align-self: center;
+  }
+}
+
+table.driver-table th,
+table.driver-table td {
+  padding: 0.55rem 0.45rem;
+}
+table.driver-table .sub {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--color-muted);
+}
+
 .chart-stats {
   font-size: 0.85rem;
   color: var(--color-secondary-text);
@@ -580,6 +705,9 @@ table.line-items tfoot td {
     display: block;
     overflow-x: auto;
     white-space: nowrap;
+  }
+  table.line-items.driver-table {
+    display: table; /* four columns: fits a phone without scrolling */
   }
   .nav {
     gap: 0.5rem;

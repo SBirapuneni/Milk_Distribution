@@ -1,7 +1,7 @@
 import { navHtml, wireNav } from '../components/nav';
 import { getAnalytics } from '../api';
-import { attachTooltips, renderBarList, renderColumnChart, renderLineChart } from '../charts';
-import type { SeriesPoint } from '../charts';
+import { attachTooltips, chartMarkers, pieColor, renderBarList, renderColumnChart, renderDonut, renderLineChart } from '../charts';
+import type { ChartMarker, SeriesPoint } from '../charts';
 import type { Analytics, AnalyticsByDate, AnalyticsByDriver, AnalyticsByProduct } from '../types';
 import {
   addDays,
@@ -145,6 +145,9 @@ function renderContent(data: Analytics, ctx: Context): string {
   }
 
   const byDate = fillDates(data.byDate, ctx);
+  const markers = rangeEvents(data, byDate, ctx);
+  // One color per product, shared by every product chart on the page.
+  const productColor = new Map(data.byProduct.map((p, i) => [p.productId, pieColor(i)]));
 
   return `
     ${renderSummary(data, ctx)}
@@ -153,7 +156,42 @@ function renderContent(data: Analytics, ctx: Context): string {
     ${renderTrendStats(byDate, ctx)}
     ${renderLineChart(
       byDate.map((d) => ({ x: d.date, y: d.revenue, extra: `${d.tripCount} trip${d.tripCount === 1 ? '' : 's'}` })),
-      { color: 'var(--series-1)', formatValue: moneyRound, formatAxis: moneyCompact, partialLast: ctx.partialLast, label: 'Sales per day' },
+      { color: 'var(--series-1)', formatValue: moneyRound, formatAxis: moneyCompact, partialLast: ctx.partialLast, label: 'Sales per day', markers },
+    )}
+    ${chartMarkers(markers)}
+
+    <div class="pie-row">
+      <section>
+        <h2>Sales by product</h2>
+        ${renderDonut(
+          data.byProduct.map((p) => ({ label: p.productName, value: p.revenue, color: productColor.get(p.productId) })),
+          { formatValue: moneyCompact, centerLabel: 'Sales', label: 'Share of sales by product', maxSlices: 7 },
+        )}
+      </section>
+      <section>
+        <h2>Morning vs Evening</h2>
+        ${renderDonut(
+          data.bySession.map((x) => ({ label: `${x.session} · ${x.tripCount} trip${x.tripCount === 1 ? '' : 's'}`, value: x.revenue, color: x.session === 'Morning' ? 'var(--series-1)' : 'var(--series-2)' })),
+          { formatValue: moneyCompact, centerLabel: 'Sales', label: 'Share of sales by session' },
+        )}
+      </section>
+    </div>
+
+    <h2>Sales by route</h2>
+    ${renderDonut(
+      data.byRoute.map((r) => ({ label: r.routeName, value: r.revenue })),
+      { formatValue: moneyCompact, centerLabel: 'Sales', label: 'Share of sales by route', maxSlices: 7 },
+    )}
+    ${renderBarList(
+      data.byRoute.map((r) => ({
+        label: r.routeName,
+        value: r.revenue,
+        display: moneyRound(r.revenue),
+        sub:
+          `${r.tripCount} trip${r.tripCount === 1 ? '' : 's'}` +
+          (r.shortage > 0 ? ` · short ${money(r.shortage)}` : '') +
+          (r.excess > 0 ? ` · excess ${money(r.excess)}` : ''),
+      })),
     )}
 
     <h2>Cash short per day</h2>
@@ -167,45 +205,33 @@ function renderContent(data: Analytics, ctx: Context): string {
     }
 
     <h2>Cash discrepancies by driver</h2>
+    ${renderShortShare(data.byDriver)}
     ${renderDriverTable(data.byDriver)}
 
     <h2>Returns</h2>
-    ${renderReturns(data, byDate, ctx)}
-
-    <h2>Sales by route</h2>
-    ${renderBarList(
-      data.byRoute.map((r) => ({
-        label: r.routeName,
-        value: r.revenue,
-        display: moneyRound(r.revenue),
-        sub:
-          `${r.tripCount} trip${r.tripCount === 1 ? '' : 's'}` +
-          (r.shortage > 0 ? ` · short ${money(r.shortage)}` : '') +
-          (r.excess > 0 ? ` · excess ${money(r.excess)}` : ''),
-      })),
-    )}
-
-    <h2>Sales by product</h2>
-    ${renderBarList(
-      data.byProduct.map((p) => ({
-        label: p.productName,
-        value: p.revenue,
-        display: moneyRound(p.revenue),
-        sub: `${percent(p.revenue / (data.summary.totalRevenue || 1))} of sales`,
-      })),
-    )}
-
-    <h2>Morning vs Evening</h2>
-    ${renderBarList(
-      data.bySession.map((s) => ({
-        label: s.session,
-        value: s.revenue,
-        display: moneyRound(s.revenue),
-        sub: `${percent(s.revenue / (data.summary.totalRevenue || 1))} · ${s.tripCount} trip${s.tripCount === 1 ? '' : 's'}`,
-        color: s.session === 'Morning' ? 'var(--series-1)' : 'var(--series-2)',
-      })),
-    )}
+    ${renderReturns(data, byDate, ctx, productColor)}
   `;
+}
+
+/** Routes or products that started or stopped partway through the range —
+ * explains steps in the sales trend (e.g. a route being closed). Only gaps of
+ * three or more days at the start or end count, so a day off doesn't. */
+function rangeEvents(data: Analytics, byDate: AnalyticsByDate[], ctx: Context): ChartMarker[] {
+  if (byDate.length < 7) return [];
+  const first = byDate[0].date;
+  const last = byDate[byDate.length - (ctx.partialLast ? 2 : 1)].date; // last complete day
+  const events: ChartMarker[] = [];
+  const check = (name: string, firstDate: string, lastDate: string, what: 'trips' | 'sales') => {
+    if (firstDate > addDays(first, 2)) {
+      events.push({ after: addDays(firstDate, -1), text: `${name}: ${what === 'trips' ? 'first settled trip' : 'first sold'} on ${shortDate(firstDate)}` });
+    }
+    if (lastDate < addDays(last, -2)) {
+      events.push({ after: lastDate, text: `${name}: ${what === 'trips' ? 'no settled trips' : 'not sold'} after ${shortDate(lastDate)}` });
+    }
+  };
+  data.byRoute.forEach((r) => check(r.routeName, r.firstDate, r.lastDate, 'trips'));
+  data.byProduct.forEach((p) => check(p.productName, p.firstDate, p.lastDate, 'sales'));
+  return events.sort((a, b) => a.after.localeCompare(b.after)).slice(0, 6);
 }
 
 /** Every date from the first day with data (or the range start, if later)
@@ -324,22 +350,31 @@ function renderTrendStats(byDate: AnalyticsByDate[], ctx: Context): string {
 
 // ---- Drivers ------------------------------------------------------------------
 
+/** Who the missing cash went missing with — only when more than one driver
+ * was short, otherwise the table says it all. */
+function renderShortShare(drivers: AnalyticsByDriver[]): string {
+  const short = drivers.filter((d) => d.shortage > 0);
+  if (short.length < 2) return '';
+  return `<h3>Share of cash short</h3>
+    ${renderDonut(
+      short.map((d) => ({ label: d.driver, value: d.shortage })),
+      { formatValue: money, centerLabel: 'Short', label: 'Share of cash short by driver' },
+    )}`;
+}
+
 function renderDriverTable(drivers: AnalyticsByDriver[]): string {
   const withIssues = drivers.filter((d) => d.shortage > 0 || d.excess > 0);
   if (withIssues.length === 0) return '<p class="ok">Every settled trip in this range balanced exactly.</p>';
   return `
-    <div class="table-scroll">
-    <table class="line-items">
-      <thead><tr><th>Driver</th><th>Trips</th><th>Short trips</th><th class="num">Total short</th><th class="num">Total excess</th><th class="num">Net</th></tr></thead>
+    <table class="line-items driver-table">
+      <thead><tr><th>Driver</th><th class="num">Short</th><th class="num">Excess</th><th class="num">Net</th></tr></thead>
       <tbody>
         ${withIssues
           .map(
             (d) => `
           <tr>
-            <td>${escapeHtml(d.driver)}</td>
-            <td>${d.tripCount}</td>
-            <td>${d.shortTrips}</td>
-            <td class="num ${d.shortage > 0 ? 'warn' : ''}">${money(d.shortage)}</td>
+            <td>${escapeHtml(d.driver)}<span class="sub">${d.tripCount} trip${d.tripCount === 1 ? '' : 's'}</span></td>
+            <td class="num ${d.shortage > 0 ? 'warn' : ''}">${money(d.shortage)}<span class="sub">${d.shortTrips > 0 ? `${d.shortTrips} trip${d.shortTrips === 1 ? '' : 's'}` : '—'}</span></td>
             <td class="num">${money(d.excess)}</td>
             <td class="num ${d.discrepancy < 0 ? 'warn' : ''}">${money(d.discrepancy)}</td>
           </tr>
@@ -348,7 +383,6 @@ function renderDriverTable(drivers: AnalyticsByDriver[]): string {
           .join('')}
       </tbody>
     </table>
-    </div>
   `;
 }
 
@@ -358,7 +392,7 @@ function valueRate(returned: number, dispatched: number): number {
   return dispatched > 0 ? returned / dispatched : 0;
 }
 
-function renderReturns(data: Analytics, byDate: AnalyticsByDate[], ctx: Context): string {
+function renderReturns(data: Analytics, byDate: AnalyticsByDate[], ctx: Context, productColor: Map<string, string>): string {
   const s = data.summary;
   const overall = valueRate(s.totalReturned, s.totalDispatched);
   // "High" = clearly worse than the business as a whole, not a fixed cut-off:
@@ -377,6 +411,12 @@ function renderReturns(data: Analytics, byDate: AnalyticsByDate[], ctx: Context)
   return `
     <p class="chart-stats">Overall, <strong>${percent(overall)}</strong> of stock sent out (by value, ${moneyRound(s.totalReturned)}) came back.</p>
     ${renderReturnsCallout(products, s.totalReturned, s.totalDispatched)}
+
+    <h3>Where the returned value comes from</h3>
+    ${renderDonut(
+      data.byProduct.map((p) => ({ label: p.productName, value: p.returnedValue, color: productColor.get(p.productId) })),
+      { formatValue: moneyCompact, centerLabel: 'Returned', label: 'Share of returned value by product', maxSlices: 7 },
+    )}
 
     <h3>Returns per day (% of value sent out)</h3>
     ${renderLineChart(perDay, { color: 'var(--series-2)', formatValue: percent, formatAxis: percent, partialLast: ctx.partialLast, label: 'Return rate per day' })}
