@@ -74,12 +74,19 @@ function slotLabel(slot: ShopSlot, today: string): string {
   return `${dayLabel(slot.date, today)} ${slot.session === 'Morning' ? 'morning' : 'evening'}`;
 }
 
-/** 'yyyy-MM-dd HH:mm' → '9:00 PM today' / '12:00 PM tomorrow'. */
+/** '2026-09-29' → 'Tue, 29 Sep' (or 'Tuesday, 29 Sep' with long). */
+function dateLabel(date: string, long = false): string {
+  const [y, m, d] = date.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString('en-IN', { weekday: long ? 'long' : 'short', day: 'numeric', month: 'short' });
+}
+
+/** 'yyyy-MM-dd HH:mm' → '9:00 PM today (Mon, 28 Sep)'. */
 function cutoffLabel(cutoff: string, today: string): string {
   const [date, time] = cutoff.split(' ');
   const [h, min] = time.split(':').map(Number);
   const clock = `${((h + 11) % 12) + 1}:${String(min).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
-  return `${clock} ${dayLabel(date, today).toLowerCase()}`;
+  const day = dayLabel(date, today);
+  return day === 'Today' || day === 'Tomorrow' ? `${clock} ${day.toLowerCase()} (${dateLabel(date)})` : `${clock}, ${dateLabel(date)}`;
 }
 
 // ---- Order screen ------------------------------------------------------------
@@ -120,12 +127,14 @@ function renderOrders(container: HTMLElement, home: ShopHome, selected?: { date:
         .map(
           (s) => `<button type="button" class="session-tab ${s === slot ? 'active' : ''}" data-session="${s.session}" data-date="${s.date}">
             ${escapeHtml(slotLabel(s, today))}
+            <span class="tab-date">${escapeHtml(dateLabel(s.date))}</span>
             <span class="tab-status ${s.order && s.order.items.length ? '' : 'pending'}">${s.order && s.order.items.length ? 'Ordered ✓' : 'Not ordered'}</span>
           </button>`,
         )
         .join('')}
     </div>
-    <p class="cutoff">Order for <strong>${escapeHtml(slotLabel(slot, today).toLowerCase())}</strong> by <strong>${escapeHtml(cutoffLabel(slot.cutoff, today))}</strong>. You can change it until then.</p>
+    <h2 class="delivery-heading">${slot.session === 'Morning' ? '☀️ Morning' : '🌙 Evening'} delivery · ${escapeHtml(dateLabel(slot.date, true))}</h2>
+    <p class="cutoff">Place or change this order until <strong>${escapeHtml(cutoffLabel(slot.cutoff, today))}</strong>.</p>
     <form id="order-form">
       <div class="table-scroll">
       <table class="line-items">
