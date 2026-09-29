@@ -1,7 +1,7 @@
 import { navHtml, wireNav } from '../components/nav';
 import { getAnalytics } from '../api';
-import { attachTooltips, chartMarkers, pieColor, renderBarList, renderColumnChart, renderDonut, renderLineChart } from '../charts';
-import type { ChartMarker, SeriesPoint } from '../charts';
+import { attachTooltips, chartMarkers, pieColor, renderBarList, renderColumnChart, renderDonut, renderLineChart, renderRateList } from '../charts';
+import type { ChartMarker, RateRow, SeriesPoint } from '../charts';
 import type { Analytics, AnalyticsByDate, AnalyticsByDriver, AnalyticsByProduct } from '../types';
 import {
   addDays,
@@ -396,8 +396,21 @@ function renderReturns(data: Analytics, byDate: AnalyticsByDate[], ctx: Context,
   const s = data.summary;
   const overall = valueRate(s.totalReturned, s.totalDispatched);
   // "High" = clearly worse than the business as a whole, not a fixed cut-off:
-  // at least 1.5× the overall rate and at least 5%.
-  const isHigh = (rate: number) => rate >= 0.05 && rate >= overall * 1.5;
+  // at least 1.5× the overall rate and at least 5%. "Above"/"below" = 20%+
+  // away from it; the same cut-offs as the "× average" wording.
+  const tone = (rate: number): RateRow['tone'] =>
+    rate >= 0.05 && rate >= overall * 1.5
+      ? 'high'
+      : overall > 0 && rate >= overall * 1.2
+        ? 'above'
+        : overall > 0 && rate <= overall * 0.8
+          ? 'below'
+          : 'normal';
+  const vsAverage = (rate: number) => {
+    if (overall <= 0) return '';
+    const ratio = rate / overall;
+    return ratio >= 1.2 ? ` · ${ratio.toFixed(1)}× average` : ratio <= 0.8 ? ' · below average' : ' · about average';
+  };
 
   const products = [...data.byProduct].sort(
     (a, b) => valueRate(b.returnedValue, b.dispatchedValue) - valueRate(a.returnedValue, a.dispatchedValue),
@@ -422,35 +435,40 @@ function renderReturns(data: Analytics, byDate: AnalyticsByDate[], ctx: Context,
     ${renderLineChart(perDay, { color: 'var(--series-2)', formatValue: percent, formatAxis: percent, partialLast: ctx.partialLast, label: 'Return rate per day' })}
 
     <h3>Return rate by product</h3>
-    ${renderBarList(
+    ${renderRateList(
       products.map((p) => {
         const rate = valueRate(p.returnedValue, p.dispatchedValue);
         return {
           label: p.productName,
-          value: rate,
-          display: percent(rate),
-          sub: `${p.qtyReturned} of ${p.qtyDispatched} returned · ${moneyRound(p.returnedValue)}`,
-          color: isHigh(rate) ? 'var(--color-danger)' : 'var(--series-2)',
+          rate,
+          tone: tone(rate),
+          sub: `${qty(p.qtyReturned)} of ${qty(p.qtyDispatched)} came back · ${moneyRound(p.returnedValue)}${vsAverage(rate)}`,
         };
       }),
+      { average: overall, averageLabel: 'Average' },
     )}
 
     <h3>Return rate by route</h3>
-    ${renderBarList(
+    ${renderRateList(
       routes.map((r) => {
         const rate = valueRate(r.returned, r.dispatched);
         return {
           label: r.routeName,
-          value: rate,
-          display: percent(rate),
-          sub: `${moneyRound(r.returned)} returned`,
-          color: isHigh(rate) ? 'var(--color-danger)' : 'var(--series-2)',
+          rate,
+          tone: tone(rate),
+          sub: `${moneyRound(r.returned)} of ${moneyRound(r.dispatched)} came back${vsAverage(rate)}`,
         };
       }),
+      { average: overall, averageLabel: 'Average' },
     )}
 
-    ${renderProductTable(products, isHigh)}
+    <h3>Returns by route and product</h3>
+    ${renderRouteProductReturns(data, products)}
   `;
+}
+
+function qty(n: number): string {
+  return n.toLocaleString('en-IN');
 }
 
 /** Calls out the single product whose returns stand out most against the rest
@@ -465,33 +483,70 @@ function renderReturnsCallout(products: AnalyticsByProduct[], totalReturned: num
   });
   if (!best) return '';
   const b = best as { name: string; rate: number; rest: number; ratio: number };
-  return `<p class="callout"><strong>${escapeHtml(b.name)}</strong> comes back ${percent(b.rate)} of the time — ${b.ratio.toFixed(1)}× everything else (${percent(b.rest)}). Check which routes below return the most and send them less.</p>`;
+  return `<p class="callout"><strong>${escapeHtml(b.name)}</strong> comes back ${percent(b.rate)} of the time — ${b.ratio.toFixed(1)}× everything else (${percent(b.rest)}). The route-by-product table at the end shows where.</p>`;
 }
 
-function renderProductTable(products: AnalyticsByProduct[], isHigh: (rate: number) => boolean): string {
-  if (products.length === 0) return '';
+/** Each product's return rate on each route, shaded where a route returns a
+ * product clearly more than the other routes do — the place to send less.
+ * The worst of those are listed first as hot spots. */
+function renderRouteProductReturns(data: Analytics, products: AnalyticsByProduct[]): string {
+  if (data.byRouteProduct.length === 0 || data.byRoute.length < 2) return '<p class="muted">Needs at least two routes.</p>';
+  const routes = [...data.byRoute].sort((a, b) => a.routeName.localeCompare(b.routeName, undefined, { numeric: true }));
+  const cells = new Map(data.byRouteProduct.map((c) => [`${c.routeId}|${c.productId}`, c]));
+
+  // A cell compared with the same product on every other route.
+  const compare = (p: AnalyticsByProduct, routeId: string) => {
+    const c = cells.get(`${routeId}|${p.productId}`);
+    if (!c || c.dispatchedValue <= 0) return null;
+    const rate = valueRate(c.returnedValue, c.dispatchedValue);
+    const others = valueRate(p.returnedValue - c.returnedValue, p.dispatchedValue - c.dispatchedValue);
+    const ratio = others > 0 ? rate / others : rate > 0 ? Infinity : 1;
+    // Extra money back compared with what the other routes' rate would give.
+    const extra = c.returnedValue - c.dispatchedValue * others;
+    return { c, rate, others, ratio, extra };
+  };
+  const heat = (ratio: number, rate: number) => (rate < 0.03 ? 0 : ratio >= 2 ? 3 : ratio >= 1.5 ? 2 : ratio >= 1.25 ? 1 : 0);
+
+  const hot = products
+    .flatMap((p) => routes.map((r) => ({ p, r, x: compare(p, r.routeId) })))
+    .filter((h) => h.x && heat(h.x.ratio, h.x.rate) >= 2 && h.x.extra > 0)
+    .sort((a, b) => b.x!.extra - a.x!.extra)
+    .slice(0, 3);
+
+  const hotHtml = hot.length
+    ? `<ul class="hotspots">${hot
+        .map(
+          ({ p, r, x }) =>
+            `<li><strong>${escapeHtml(r.routeName)} · ${escapeHtml(p.productName)}</strong>: ${percent(x!.rate)} comes back, vs ${percent(x!.others)} on other routes
+             <br><span class="muted">${qty(x!.c.qtyReturned)} of ${qty(x!.c.qtyDispatched)} returned · about ${moneyRound(x!.extra)} more than usual — send this route less</span></li>`,
+        )
+        .join('')}</ul>`
+    : '<p class="ok">No route returns any product much more than the others do.</p>';
+
+  const row = (p: AnalyticsByProduct) => {
+    const all = valueRate(p.returnedValue, p.dispatchedValue);
+    return `<tr><td>${escapeHtml(p.productName)}</td><td class="num all">${percent(all)}</td>${routes
+      .map((r) => {
+        const x = compare(p, r.routeId);
+        if (!x) return '<td class="num muted">—</td>';
+        const h = heat(x.ratio, x.rate);
+        const tip = `${r.routeName} · ${p.productName}: ${percent(x.rate)} (${qty(x.c.qtyReturned)} of ${qty(x.c.qtyDispatched)}) · other routes ${percent(x.others)}`;
+        return `<td class="num${h ? ` heat-${h}` : ''}" data-tooltip="${escapeHtml(tip)}">${percent(x.rate)}</td>`;
+      })
+      .join('')}</tr>`;
+  };
+  const totals = `<tr class="totals"><td>All products</td><td class="num all">${percent(valueRate(data.summary.totalReturned, data.summary.totalDispatched))}</td>${routes
+    .map((r) => `<td class="num">${percent(valueRate(r.returned, r.dispatched))}</td>`)
+    .join('')}</tr>`;
+
   return `
+    ${hotHtml}
     <div class="table-scroll">
-    <table class="line-items">
-      <thead><tr><th>Product</th><th class="num">Sent out</th><th class="num">Returned</th><th class="num">Return rate</th><th class="num">Returned value</th><th class="num">Sales</th></tr></thead>
-      <tbody>
-        ${products
-          .map((p) => {
-            const rate = valueRate(p.returnedValue, p.dispatchedValue);
-            return `
-          <tr>
-            <td>${escapeHtml(p.productName)}</td>
-            <td class="num">${p.qtyDispatched}</td>
-            <td class="num">${p.qtyReturned}</td>
-            <td class="num ${isHigh(rate) ? 'warn' : ''}">${percent(rate)}</td>
-            <td class="num">${moneyRound(p.returnedValue)}</td>
-            <td class="num">${moneyRound(p.revenue)}</td>
-          </tr>
-        `;
-          })
-          .join('')}
-      </tbody>
-    </table>
+      <table class="line-items heatmap">
+        <thead><tr><th>Product</th><th class="num all">All</th>${routes.map((r) => `<th class="num">${escapeHtml(r.routeName)}</th>`).join('')}</tr></thead>
+        <tbody>${products.map(row).join('')}${totals}</tbody>
+      </table>
     </div>
+    <p class="heat-key"><span class="k1">1.25× other routes</span><span class="k2">1.5×</span><span class="k3">2× or more</span></p>
   `;
 }

@@ -204,6 +204,16 @@ export interface AnalyticsByProduct {
   lastDate: string;
 }
 
+/** One product on one route: the cells of the returns table. */
+export interface AnalyticsByRouteProduct {
+  routeId: string;
+  productId: string;
+  qtyDispatched: number;
+  qtyReturned: number;
+  dispatchedValue: number;
+  returnedValue: number;
+}
+
 export interface Analytics {
   summary: AnalyticsSummary;
   byDate: AnalyticsByDate[];
@@ -211,5 +221,6 @@ export interface Analytics {
   byDriver: AnalyticsByDriver[];
   bySession: AnalyticsBySession[];
   byProduct: AnalyticsByProduct[];
+  byRouteProduct: AnalyticsByRouteProduct[];
   previous?: Analytics; // comparison range, when requested
 }

@@ -115,7 +115,9 @@ begin
                    * case p.id when 'DEMO-P1' then 120 when 'DEMO-P2' then 80 when 'DEMO-P3' then 50
                                when 'DEMO-P4' then 40 when 'DEMO-P5' then 60 when 'DEMO-P6' then 8 else 30 end
                    * (0.85 + random() * 0.3)) as qty,
-                 case p.id when 'DEMO-P4' then 0.12 when 'DEMO-P6' then 0.10 when 'DEMO-P7' then 0.2 else 0.04 end as ret_rate
+                 case p.id when 'DEMO-P4' then 0.12 when 'DEMO-P6' then 0.10 when 'DEMO-P7' then 0.2 else 0.04 end
+                   -- Route 4 over-orders Curd and Route 2 Paneer: both come back about twice as often
+                   * case when (r = 4 and p.id = 'DEMO-P4') or (r = 2 and p.id = 'DEMO-P6') then 2.2 else 1 end as ret_rate
         ) q
         where p.id like 'DEMO-%'
           and (p.id <> 'DEMO-P7' or d < today - 20);                   -- Flavoured Milk discontinued 20 days ago

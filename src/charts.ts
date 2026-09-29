@@ -329,3 +329,43 @@ function pct(x: number): string {
   const v = x * 100;
   return `${v >= 10 || v === 0 ? Math.round(v) : v.toFixed(1)}%`;
 }
+
+// ---- Rate list -------------------------------------------------------------------
+
+export interface RateRow {
+  label: string;
+  rate: number; // 0..1
+  sub?: string;
+  tone: 'high' | 'above' | 'normal' | 'below';
+}
+
+/** Rates (e.g. return rates) on one shared 0–N% scale, with a dashed line in
+ * every bar at the overall average — so "worse than usual" is visible at a
+ * glance, and nearly equal rates look nearly equal. */
+export function renderRateList(rows: RateRow[], opts: { average: number; averageLabel: string }): string {
+  if (rows.length === 0) return '<p class="muted">No data.</p>';
+  const top = Math.max(opts.average, ...rows.map((r) => r.rate));
+  const scale = Math.max(0.05, Math.ceil(top * 20) / 20); // next 5%
+  const at = (rate: number) => `${Math.min(100, (rate / scale) * 100).toFixed(1)}%`;
+  const fmt = (x: number) => {
+    const v = x * 100;
+    return `${v !== 0 && v < 10 ? v.toFixed(1) : Math.round(v)}%`;
+  };
+  return `
+    <div class="rate-list">
+      ${rows
+        .map(
+          (r) => `
+        <div class="rate-row">
+          <div class="rate-head"><span class="rate-label">${escapeHtml(r.label)}</span><span class="rate-value tone-${r.tone}">${fmt(r.rate)}</span></div>
+          <div class="rate-track">
+            <div class="rate-fill tone-${r.tone}" style="width: ${r.rate > 0 ? `max(3px, ${at(r.rate)})` : '0'}"></div>
+            <div class="rate-avg" style="left: ${at(opts.average)}"></div>
+          </div>
+          ${r.sub ? `<div class="rate-sub">${escapeHtml(r.sub)}</div>` : ''}
+        </div>`,
+        )
+        .join('')}
+      <div class="rate-scale"><span>0%</span><span class="rate-scale-avg"><i></i>${escapeHtml(opts.averageLabel)} ${fmt(opts.average)}</span><span>${fmt(scale)}</span></div>
+    </div>`;
+}

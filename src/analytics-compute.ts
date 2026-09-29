@@ -8,6 +8,7 @@ import type {
   AnalyticsByDriver,
   AnalyticsByProduct,
   AnalyticsByRoute,
+  AnalyticsByRouteProduct,
   AnalyticsBySession,
   Session,
   Trip,
@@ -123,6 +124,8 @@ export function computeAnalytics(src: AnalyticsSource, payload: { dateFrom?: str
   });
 
   const tripDate = new Map(settled.map((t) => [t.TripId, t.Date]));
+  const tripRoute = new Map(settled.map((t) => [t.TripId, t.RouteId]));
+  const byRouteProductMap = new Map<string, AnalyticsByRouteProduct>();
   const byProductMap = new Map<string, AnalyticsByProduct>();
   items.forEach((i) => {
     const date = tripDate.get(i.TripId)!;
@@ -149,6 +152,17 @@ export function computeAnalytics(src: AnalyticsSource, payload: { dateFrom?: str
     p.returnedValue += Number(i.ReturnedValue) || 0;
     p.revenue = p.dispatchedValue - p.returnedValue;
     p.returnRate = p.qtyDispatched > 0 ? p.qtyReturned / p.qtyDispatched : 0;
+
+    const routeId = tripRoute.get(i.TripId)!;
+    const key = `${routeId}|${i.ProductId}`;
+    if (!byRouteProductMap.has(key)) {
+      byRouteProductMap.set(key, { routeId, productId: i.ProductId, qtyDispatched: 0, qtyReturned: 0, dispatchedValue: 0, returnedValue: 0 });
+    }
+    const rp = byRouteProductMap.get(key)!;
+    rp.qtyDispatched += Number(i.QtyDispatched) || 0;
+    rp.qtyReturned += Number(i.QtyReturned) || 0;
+    rp.dispatchedValue += Number(i.DispatchedValue) || 0;
+    rp.returnedValue += Number(i.ReturnedValue) || 0;
   });
 
   return {
@@ -167,5 +181,6 @@ export function computeAnalytics(src: AnalyticsSource, payload: { dateFrom?: str
     byDriver: Array.from(byDriverMap.values()).sort((a, b) => b.shortage - a.shortage || b.excess - a.excess),
     bySession: Array.from(bySessionMap.values()),
     byProduct: Array.from(byProductMap.values()).sort((a, b) => b.revenue - a.revenue),
+    byRouteProduct: Array.from(byRouteProductMap.values()),
   };
 }
